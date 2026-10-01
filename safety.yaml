@@ -1,0 +1,860 @@
+# =====================================================================
+# /opt/heimdall/safety.yaml
+# Owner: root:root   Mode: 0600
+# Validated against heimdald.py v2.0.0-m1
+# =====================================================================
+version: 2
+policy_id: "watchtower-v2"
+last_modified: "2025-01-01T00:00:00Z"
+owner_uid_required: 0
+mode_required: "0600"
+
+# ---------------------------------------------------------------------
+# RUNTIME MODE
+# ---------------------------------------------------------------------
+runtime_mode:
+  default: hybrid
+
+  domain_enforce:
+    destructive_study: sandbox
+    code_generation: hybrid
+    red_teaming: direct
+    forensics: direct
+    linux_administration: direct
+
+  flag_enforce:
+    "code_generation.python.execute": sandbox
+    "code_generation.rust.cargo_run": sandbox
+    "red_teaming.exploitation.metasploit_exploit": sandbox
+    "red_teaming.c2.sliver": sandbox
+    "red_teaming.c2.mythic": sandbox
+
+  direct:
+    write_ahead_log: true
+    require_confirmation_for_allow: false
+    require_confirmation_for_warn: true
+    require_typed_phrase_for_warn: true
+    rate_limit_per_minute: 30
+    panic_hotkey: "Ctrl-]"
+    abort_if_daemon_unreachable: true
+    cgroup_limits:
+      memory_max: "4G"
+      cpu_quota: "200%"
+      pids_max: 512
+
+  sandbox:
+    impl: bwrap
+    net: none
+    ro_root: true
+    rw_paths:
+      - "$HOME/projects"
+      - "$HOME/.cache/heimdall"
+    unshare: [pid, uts, ipc, cgroup]
+    seccomp_profile: default
+    cap_drop: [ALL]
+
+  hybrid:
+    default: direct
+    auto_sandbox_when:
+      - flag_suffix_in: [".execute", ".run", ".detonate", ".install", ".publish"]
+      - flag_prefix_in: ["destructive_study."]
+      - contains_unsafe_code: true
+      - safety_label: deny
+      - command_reads_from_stdin_pipe: true
+
+# ---------------------------------------------------------------------
+# DEFAULTS
+# ---------------------------------------------------------------------
+defaults:
+  unknown_flag: false
+  unknown_command: false
+  warn_requires_confirmation: true
+  confirmation_timeout_sec: 45
+  destructive_confirmation_phrase: "I HAVE WRITTEN AUTHORIZATION"
+  mode_switch_confirmation_phrase: "I UNDERSTAND THE RISK"
+  log_all_decisions: true
+  max_agent_iterations: 10
+  no_progress_repeat_limit: 2
+
+# ---------------------------------------------------------------------
+# LAB MODE — gate for destructive_study.*
+# ---------------------------------------------------------------------
+lab_mode:
+  enabled: false
+  require_offline: true
+  require_isolated_netns: true
+  forbid_host_mounts: true
+  require_sample_hash_log: true
+  evidence_dir: /var/lib/heimdall/evidence
+  auto_flip_off_after_minutes: 120
+
+# ---------------------------------------------------------------------
+# ABSOLUTE DENIALS — cannot be overridden by any flag
+# ---------------------------------------------------------------------
+global_deny:
+  - match: '^rm\s+-rf\s+/(\s|$)'
+    reason: "Root filesystem deletion"
+  - match: ':\(\)\s*\{.*\};\s*:'
+    reason: "Fork bomb"
+  - match: '^mkfs\.'
+    reason: "Filesystem format"
+  - match: '^dd\s+.*of=/dev/(sd|nvme|hd|vd)'
+    reason: "Raw disk write"
+  - match: '(curl|wget)\s+[^|]*\|\s*(ba|z|k)?sh'
+    reason: "Pipe-to-shell"
+  - match: 'chmod\s+.*777\s+/\s*$'
+    reason: "World-writable root"
+  - match: '^\s*>\s*/dev/(sd|nvme|hd|vd)'
+    reason: "Raw disk overwrite"
+  - match: 'iptables\s+-F\s*$'
+    reason: "Firewall flush"
+  - match: 'shred\s+-[a-z]*z?\s+/dev/(sd|nvme)'
+    reason: "Disk shred"
+  - match: 'sysctl\s+-w\s+kernel\.(panic|sysrq)'
+    reason: "Kernel behavior override"
+  - match: '^\s*(sudo\s+)?(rm|shred|wipe)\s+.*(~|/home/[^/]+)/(\.ssh|\.gnupg|\.aws|\.config/gh|\.docker)'
+    reason: "Deletion of credential directories"
+  - match: 'curl\s+.*\.(onion|i2p)'
+    reason: "Tor/I2P egress"
+  - match: 'history\s+-c\s*$'
+    reason: "Shell history wipe (anti-forensics)"
+
+# ---------------------------------------------------------------------
+# REUSABLE MESSAGES
+# ---------------------------------------------------------------------
+messages:
+  destructive: >-
+    This action is destructive and may cause data loss or system damage.
+    Proceed at your own responsibility?
+  privileged: >-
+    This requires elevated privileges and can affect system stability or
+    security. Proceed at your own responsibility?
+  exfiltration: >-
+    This may send data to a remote host and leak sensitive information.
+    Proceed at your own responsibility?
+  offensive_passive: >-
+    Passive reconnaissance touches public data only. Confirm you have a
+    legitimate reason; even passive recon on non-consenting parties can
+    violate privacy law in some jurisdictions.
+  offensive_active: >-
+    Active reconnaissance sends traffic to the target. Using it against
+    systems you do not own or have written authorization to test is
+    illegal in most jurisdictions (CMA, CFAA, or local equivalent).
+    Proceed at your own responsibility?
+  offensive_exploit: >-
+    This attempts to exploit a vulnerability. Verify the target is inside
+    your authorized testing boundary. Proceed at your own responsibility?
+  offensive_post: >-
+    Post-exploitation actions leave traces and may violate scope even in
+    authorized tests. Proceed?
+  offensive_c2: >-
+    This starts or connects to a C2 framework. C2 traffic can be flagged
+    by defenders and may breach scope. Proceed?
+  offensive_ad: >-
+    This performs Active Directory attack steps. Requires explicit written
+    authorization from the AD owner.
+  offensive_wireless: >-
+    Wireless attacks affect shared RF spectrum and can impact non-target
+    networks. Only perform on networks you own or are authorized to test.
+  code_write: >-
+    About to write code to disk. Review path and contents; an overwrite
+    may destroy an existing file.
+  code_execute: >-
+    About to execute generated code that has not been human-reviewed.
+    Proceed at your own responsibility?
+  unsafe_code: >-
+    Generated code uses constructs that bypass memory or type safety
+    (Rust `unsafe`, Python `ctypes`/`exec`/`eval`). Review carefully.
+  external_dependency: >-
+    This pulls third-party code from a public registry. The dependency
+    chain is not audited. Proceed at your own responsibility?
+  malware_analysis: >-
+    Malware analysis carries infection risk. Confirm sandboxed,
+    network-isolated environment before proceeding.
+  anti_forensics: >-
+    Log tampering, timestomping, or track-covering can constitute
+    obstruction of justice even during authorized tests. Proceed?
+  ai_abuse: >-
+    Deepfakes, voice cloning, disinformation, and automated social
+    engineering are illegal in many jurisdictions. Proceed at your own
+    responsibility?
+  supply_chain: >-
+    Supply-chain attack tooling targets third parties and is treated as
+    computer fraud and sabotage in many places. Proceed only within an
+    authorized red-team simulation scope.
+  botnet_ddos: >-
+    DDoS / botnet activity is illegal regardless of authorization. Only
+    permitted for traffic-generation research on infrastructure you own,
+    with coordination.
+  cryptojacking: >-
+    Unauthorized cryptomining steals compute and is treated as fraud/theft.
+    Only permitted on systems you own.
+  lab_required: >-
+    This action is only permitted while lab_mode is enabled and the
+    environment passes isolation checks.
+  sandbox_disabled: >-
+    Sandboxed execution has been disabled by policy for this command.
+  direct_mode_warning: >-
+    DIRECT MODE: this command will run on your real system with your
+    privileges. A mistake or a prompt-injection could read, modify, or
+    exfiltrate any file you can access. Confirm you understand this.
+
+# ---------------------------------------------------------------------
+# DOMAINS
+# ---------------------------------------------------------------------
+domains:
+
+  # ===================================================================
+  linux_administration:
+    enabled: true
+    flags:
+      file_read: true
+      file_write: true
+      file_delete: { action: warn, message_key: destructive }
+      chmod_chown: true
+      process_list: true
+      process_kill: true
+      service_control: { action: warn, message_key: privileged }
+      package_install: true
+      package_remove: { action: warn, message_key: destructive }
+      user_management: false
+      group_management: false
+      cron_edit: false
+      kernel_module: { action: warn, message_key: privileged }
+      mount_umount: false
+      disk_partition: false
+      system_reboot: { action: warn, message_key: destructive }
+      logs_read: true
+      logs_tamper: false
+
+  # ===================================================================
+  networking:
+    enabled: true
+    flags:
+      interface_read: true
+      interface_config: false
+      firewall_read: true
+      firewall_edit: { action: warn, message_key: privileged }
+      routing_read: true
+      routing_edit: false
+      dns_config: false
+      vpn_connect: true
+      packet_capture: { action: warn, message: "Capturing traffic may record sensitive data." }
+
+  # ===================================================================
+  red_teaming:
+    enabled: true
+    flags:
+
+      recon:
+        enabled: true
+        flags:
+          passive_whois: true
+          passive_dns: true
+          passive_certificates: true
+          passive_leaks: { action: warn, message_key: offensive_passive }
+          subdomain_enum_passive: true
+          host_discovery: { action: warn, message_key: offensive_active }
+          port_probing: { action: warn, message_key: offensive_active }
+          service_fingerprint: { action: warn, message_key: offensive_active }
+          osint_harvester: { action: warn, message_key: offensive_passive }
+          shodan_query: true
+          maltego_graph: true
+
+      scanning:
+        enabled: true
+        flags:
+          port_scan_tcp: { action: warn, message_key: offensive_active }
+          port_scan_udp: { action: warn, message_key: offensive_active }
+          port_scan_masscan: { action: warn, message_key: offensive_active }
+          port_scan_zmap: { action: warn, message_key: offensive_active }
+          smb_enum: { action: warn, message_key: offensive_active }
+          ldap_enum: { action: warn, message_key: offensive_active }
+          snmp_enum: { action: warn, message_key: offensive_active }
+          rpc_enum: { action: warn, message_key: offensive_active }
+          nfs_enum: { action: warn, message_key: offensive_active }
+          ftp_enum: { action: warn, message_key: offensive_active }
+          ssh_enum: { action: warn, message_key: offensive_active }
+          netbios_enum: { action: warn, message_key: offensive_active }
+
+      vulnerability:
+        enabled: true
+        flags:
+          openvas_scan: { action: warn, message_key: offensive_active }
+          nessus_scan: { action: warn, message_key: offensive_active }
+          nuclei_scan: { action: warn, message_key: offensive_active }
+          nikto_scan: { action: warn, message_key: offensive_active }
+          sqlmap_scan: { action: warn, message_key: offensive_active }
+          searchsploit_query: true
+          wpscan: { action: warn, message_key: offensive_active }
+          joomscan: { action: warn, message_key: offensive_active }
+
+      exploitation:
+        enabled: true
+        flags:
+          metasploit_exploit: { action: warn, message_key: offensive_exploit }
+          msfvenom_payload: { action: warn, message_key: offensive_exploit }
+          pwntools_exploit: { action: warn, message_key: offensive_exploit }
+          ropgadget: true
+          radare2_analysis: true
+          ghidra_analysis: true
+          gdb_analysis: true
+          searchsploit_use: { action: warn, message_key: offensive_exploit }
+          beefts_hook: { action: warn, message_key: offensive_exploit }
+          kernel_exploit: { action: warn, message_key: offensive_exploit }
+          container_escape: { action: warn, message_key: offensive_exploit }
+
+      credentials:
+        enabled: true
+        flags:
+          hydra_bruteforce: { action: warn, message_key: offensive_active }
+          medusa_bruteforce: { action: warn, message_key: offensive_active }
+          john_crack: true
+          hashcat_crack: true
+          crunch_wordlist: true
+          cewl_wordlist: true
+          responder_listen: { action: warn, message_key: offensive_active }
+          impacket_tools: { action: warn, message_key: offensive_active }
+          netexec: { action: warn, message_key: offensive_active }
+          crackmapexec: { action: warn, message_key: offensive_active }
+          credential_dumping: { action: warn, message_key: offensive_post }
+
+      wireless:
+        enabled: true
+        flags:
+          aircrack_scan: { action: warn, message_key: offensive_wireless }
+          aircrack_handshake: { action: warn, message_key: offensive_wireless }
+          kismet: { action: warn, message_key: offensive_wireless }
+          reaver_wps: { action: warn, message_key: offensive_wireless }
+          wifite: { action: warn, message_key: offensive_wireless }
+          bettercap_wifi: { action: warn, message_key: offensive_wireless }
+          rogue_ap: { action: warn, message_key: offensive_wireless }
+          hostapd_wpe: { action: warn, message_key: offensive_wireless }
+
+      mitm:
+        enabled: true
+        flags:
+          arp_spoof: { action: warn, message_key: offensive_active }
+          dns_spoof: { action: warn, message_key: offensive_active }
+          ettercap: { action: warn, message_key: offensive_active }
+          bettercap: { action: warn, message_key: offensive_active }
+          arpspoof: { action: warn, message_key: offensive_active }
+          dnsspoof: { action: warn, message_key: offensive_active }
+          scapy_packet_craft: { action: warn, message_key: offensive_active }
+          hping3: { action: warn, message_key: offensive_active }
+          tcpdump: true
+          wireshark: true
+
+      web_api:
+        enabled: true
+        flags:
+          burp: { action: warn, message_key: offensive_active }
+          zap: { action: warn, message_key: offensive_active }
+          sqlmap: { action: warn, message_key: offensive_active }
+          commix: { action: warn, message_key: offensive_active }
+          xsstrike: { action: warn, message_key: offensive_active }
+          nuclei_web: { action: warn, message_key: offensive_active }
+          ffuf: { action: warn, message_key: offensive_active }
+          gobuster: { action: warn, message_key: offensive_active }
+          dirb: { action: warn, message_key: offensive_active }
+          wfuzz: { action: warn, message_key: offensive_active }
+
+      post_exploitation:
+        enabled: true
+        flags:
+          linpeas: { action: warn, message_key: offensive_post }
+          linenum: { action: warn, message_key: offensive_post }
+          linux_exploit_suggester: { action: warn, message_key: offensive_post }
+          gtfobins_lookup: true
+          pspy: { action: warn, message_key: offensive_post }
+          unix_privesc_check: { action: warn, message_key: offensive_post }
+          chisel_pivot: { action: warn, message_key: offensive_post }
+          ligolo_pivot: { action: warn, message_key: offensive_post }
+          socat_pivot: { action: warn, message_key: offensive_post }
+          netcat_session: { action: warn, message_key: offensive_post }
+          proxychains: { action: warn, message_key: offensive_post }
+          persistence_install: { action: warn, message_key: offensive_post }
+          lateral_movement: { action: warn, message_key: offensive_post }
+
+      c2:
+        enabled: true
+        flags:
+          sliver: { action: warn, message_key: offensive_c2 }
+          mythic: { action: warn, message_key: offensive_c2 }
+          empire: { action: warn, message_key: offensive_c2 }
+          havoc: { action: warn, message_key: offensive_c2 }
+          merlin: { action: warn, message_key: offensive_c2 }
+          poshc2: { action: warn, message_key: offensive_c2 }
+          cobaltstrike_client: { action: warn, message_key: offensive_c2 }
+          payload_delivery: { action: warn, message_key: offensive_c2 }
+
+      linux_specific:
+        enabled: true
+        flags:
+          kernel_exploit_dev: { action: warn, message_key: offensive_exploit }
+          container_escape_docker: { action: warn, message_key: offensive_exploit }
+          container_escape_k8s: { action: warn, message_key: offensive_exploit }
+          container_escape_lxc: { action: warn, message_key: offensive_exploit }
+          systemd_persistence: { action: warn, message_key: offensive_post }
+          cron_persistence: { action: warn, message_key: offensive_post }
+          ssh_persistence: { action: warn, message_key: offensive_post }
+          ld_preload_rootkit: { action: warn, message_key: offensive_post }
+          ebpf_rootkit: { action: warn, message_key: offensive_post }
+          cloud_metadata_ssrf: { action: warn, message_key: offensive_exploit }
+          ad_from_linux: { action: warn, message_key: offensive_ad }
+          bloodhound_ingest: { action: warn, message_key: offensive_ad }
+          evil_winrm: { action: warn, message_key: offensive_ad }
+          iot_embedded_attack: { action: warn, message_key: offensive_active }
+          ot_ics_attack: { action: warn, message_key: offensive_active }
+
+  # ===================================================================
+  blue_teaming:
+    enabled: true
+    flags:
+      log_monitoring: true
+      ids_ips_control: true
+      siem_query: true
+      yara_scan: true
+      sigma_rule_edit: true
+      suricata_rule_edit: true
+      isolate_host: { action: warn, message: "Isolating a host will cut its network access." }
+      kill_remote_process: { action: warn, message: "Killing a remote process may disrupt services." }
+      quarantine_file: true
+      memory_capture: true
+      disk_imaging: true
+      pcap_analysis: true
+      firewall_rules_edit: { action: warn, message_key: privileged }
+      selinux_apparmor_edit: { action: warn, message_key: privileged }
+      patch_management: { action: warn, message_key: privileged }
+      ioc_lookup: true
+      malware_analysis: { action: warn, message_key: malware_analysis }
+
+  # ===================================================================
+  hacking:
+    enabled: true
+    flags:
+      network_sniffing: { action: warn, message_key: offensive_active }
+      arp_spoof: { action: warn, message_key: offensive_active }
+      mitm: { action: warn, message_key: offensive_active }
+      dns_spoof: { action: warn, message_key: offensive_active }
+      session_hijack: { action: warn, message_key: offensive_active }
+      reverse_engineering: true
+      binary_analysis: true
+      exploit_development: { action: warn, message_key: offensive_exploit }
+      rootkit_use: false
+      backdoor_install: { action: warn, message_key: offensive_post }
+
+  # ===================================================================
+  forensics:
+    enabled: true
+    flags:
+      disk_image: true
+      memory_dump: true
+      file_carving: true
+      timeline_analysis: true
+      artifact_extraction: true
+
+  # ===================================================================
+  data_handling:
+    enabled: true
+    flags:
+      local_backup: true
+      local_restore: true
+      cloud_upload: { action: warn, message_key: exfiltration }
+      scp_out: { action: warn, message_key: exfiltration }
+      curl_post: { action: warn, message_key: exfiltration }
+      base64_and_send: false
+
+  # ===================================================================
+  destructive:
+    enabled: true
+    flags:
+      rm_recursive: { action: warn, message_key: destructive }
+      wipe_disk: false
+      shred_file: { action: warn, message_key: destructive }
+      format_filesystem: false
+      killall_services: false
+      force_unmount: { action: warn, message_key: destructive }
+
+  # ===================================================================
+  code_generation:
+    enabled: true
+    flags:
+
+      pseudocode:
+        enabled: true
+        flags:
+          display_inline: true
+          write_to_file: { action: warn, message_key: code_write }
+          overwrite_existing: { action: warn, message_key: destructive }
+          save_in_history: true
+
+      python:
+        enabled: true
+        flags:
+          display_inline: true
+          write_to_file: { action: warn, message_key: code_write }
+          overwrite_existing: { action: warn, message_key: destructive }
+          execute: { action: warn, message_key: code_execute }
+          execute_as_root: false
+          execute_with_sudo: false
+          pip_install_public: { action: warn, message_key: external_dependency }
+          pip_install_requirements: { action: warn, message_key: external_dependency }
+          pip_install_git: { action: warn, message_key: external_dependency }
+          pip_install_local: true
+          virtualenv_create: true
+          poetry_use: true
+          scan_with_ruff: true
+          scan_with_bandit: true
+          scan_dangerous_imports: true
+          block_on_scan_fail: true
+          allow_eval_exec: { action: warn, message_key: unsafe_code }
+          allow_ctypes: { action: warn, message_key: unsafe_code }
+          allow_pickle_load: { action: warn, message_key: unsafe_code }
+          allow_os_system: { action: warn, message_key: unsafe_code }
+          allow_subprocess: { action: warn, message_key: unsafe_code }
+
+      rust:
+        enabled: true
+        flags:
+          display_inline: true
+          write_to_file: { action: warn, message_key: code_write }
+          overwrite_existing: { action: warn, message_key: destructive }
+          cargo_new: true
+          cargo_init: true
+          cargo_build: true
+          cargo_build_release: true
+          cargo_check: true
+          cargo_test: true
+          cargo_run: { action: warn, message_key: code_execute }
+          cargo_run_release: { action: warn, message_key: code_execute }
+          cargo_bench: { action: warn, message_key: code_execute }
+          cargo_clean: true
+          cargo_doc: true
+          cargo_add_crate: { action: warn, message_key: external_dependency }
+          cargo_add_git_dep: { action: warn, message_key: external_dependency }
+          cargo_add_path_dep: true
+          cargo_update: { action: warn, message_key: external_dependency }
+          cargo_publish: false
+          scan_with_clippy: true
+          scan_with_cargo_audit: true
+          block_on_scan_fail: true
+          allow_unsafe_block: { action: warn, message_key: unsafe_code }
+          allow_ffi: { action: warn, message_key: unsafe_code }
+          allow_extern_crate_inline: { action: warn, message_key: unsafe_code }
+          allow_build_rs: { action: warn, message: "build.rs executes arbitrary code at compile time." }
+          allow_proc_macro: { action: warn, message_key: unsafe_code }
+          install_from_crates_io: { action: warn, message_key: external_dependency }
+          install_from_source: { action: warn, message_key: offensive_active }
+          install_prebuilt_binary: { action: warn, message_key: external_dependency }
+
+  # ===================================================================
+  destructive_study:
+    enabled: false
+    flags:
+
+      malware:
+        enabled: false
+        flags:
+          sample_collect: { action: warn, message_key: malware_analysis }
+          static_analysis: { action: warn, message_key: malware_analysis }
+          strings_extract: { action: warn, message_key: malware_analysis }
+          disassembly: { action: warn, message_key: malware_analysis }
+          dynamic_analysis_sandbox: { action: warn, message_key: malware_analysis }
+          detonation_offline: { action: warn, message_key: malware_analysis }
+          ioc_extract: { action: warn, message_key: malware_analysis }
+          deploy_malware: false
+          weaponize_sample: false
+
+      ransomware_wipers:
+        enabled: false
+        flags:
+          analyze_sample: { action: warn, message_key: malware_analysis }
+          crypto_reverse: { action: warn, message_key: malware_analysis }
+          decryptor_test_sandbox: { action: warn, message_key: malware_analysis }
+          deploy_ransomware: false
+          build_wiper: false
+          build_logic_bomb: false
+
+      botnet_ddos:
+        enabled: false
+        flags:
+          botnet_traffic_analysis: { action: warn, message_key: malware_analysis }
+          c2_protocol_reverse: { action: warn, message_key: malware_analysis }
+          traffic_gen_owned_infra: { action: warn, message_key: botnet_ddos }
+          launch_ddos: false
+          join_botnet: false
+          syn_flood: false
+          udp_flood: false
+          http_flood: false
+          amplification_attack: false
+
+      cryptojacking:
+        enabled: false
+        flags:
+          miner_detect: { action: warn, message_key: cryptojacking }
+          miner_binary_analyze: { action: warn, message_key: cryptojacking }
+          deploy_miner: false
+          hijack_resources: false
+
+      credential_fraud:
+        enabled: false
+        flags:
+          phishing_sim_authorized: { action: warn, message_key: offensive_active }
+          credential_harvest_lab: { action: warn, message_key: offensive_active }
+          bec_sim_authorized: { action: warn, message_key: offensive_active }
+          phishing_live_targets: false
+          carding: false
+          sim_swap: false
+          identity_theft: false
+
+      supply_chain:
+        enabled: false
+        flags:
+          package_diff_audit: { action: warn, message_key: supply_chain }
+          dependency_confusion_test_owned: { action: warn, message_key: supply_chain }
+          ci_cd_audit: { action: warn, message_key: supply_chain }
+          publish_malicious_package: false
+          backdoor_dependency: false
+          compromise_repo: false
+
+      data_exfiltration:
+        enabled: false
+        flags:
+          exfil_channel_analysis: { action: warn, message_key: malware_analysis }
+          dns_tunnel_lab_owned: { action: warn, message_key: offensive_active }
+          icmp_tunnel_lab_owned: { action: warn, message_key: offensive_active }
+          exfiltrate_real_data: false
+          deface: false
+          dox: false
+          destroy_data: false
+
+      anti_forensics:
+        enabled: false
+        flags:
+          ioc_study_cron: true
+          ioc_study_systemd: true
+          ioc_study_ssh_keys: true
+          ioc_study_ld_preload: true
+          ioc_study_kernel_modules: true
+          detect_log_tampering: { action: warn, message_key: anti_forensics }
+          detect_timestomping: { action: warn, message_key: anti_forensics }
+          tamper_logs: false
+          timestomp: false
+          deploy_rootkit: false
+          cover_tracks: false
+
+      linux_destructive_vectors:
+        enabled: false
+        flags:
+          kernel_rootkit_analyze: { action: warn, message_key: malware_analysis }
+          ebpf_rootkit_analyze: { action: warn, message_key: malware_analysis }
+          container_escape_ioc_study: true
+          docker_sabotage_detect: true
+          k8s_sabotage_detect: true
+          systemd_backdoor_detect: true
+          pkg_supply_chain_detect: true
+          ot_ics_sabotage_detect: true
+
+      ai_abuse:
+        enabled: false
+        flags:
+          deepfake_detect: { action: warn, message_key: ai_abuse }
+          voiceclone_detect: { action: warn, message_key: ai_abuse }
+          prompt_injection_study: { action: warn, message_key: ai_abuse }
+          disinfo_campaign_detect: { action: warn, message_key: ai_abuse }
+          automated_phishing_detect: { action: warn, message_key: ai_abuse }
+          build_deepfake: false
+          build_voiceclone: false
+          run_disinfo_campaign: false
+          build_phishing_bot: false
+
+# ---------------------------------------------------------------------
+# COMMAND MAP  (argv[0] basename → flag path)
+# ---------------------------------------------------------------------
+command_map:
+
+  # --- linux admin ---
+  ls: linux_administration.file_read
+  cat: linux_administration.file_read
+  rm: linux_administration.file_delete
+  chmod: linux_administration.chmod_chown
+  chown: linux_administration.chmod_chown
+  systemctl: linux_administration.service_control
+  apt: linux_administration.package_install
+  dnf: linux_administration.package_install
+  useradd: linux_administration.user_management
+  crontab: linux_administration.cron_edit
+
+  # --- networking ---
+  tcpdump: networking.packet_capture
+  wireshark: networking.packet_capture
+  ss: networking.interface_read
+  ip: networking.interface_read
+  iptables: networking.firewall_edit
+
+  # --- red: recon ---
+  whois: red_teaming.recon.passive_whois
+  dig: red_teaming.recon.passive_dns
+  nslookup: red_teaming.recon.passive_dns
+  theHarvester: red_teaming.recon.osint_harvester
+  recon-ng: red_teaming.recon.osint_harvester
+  spiderfoot: red_teaming.recon.osint_harvester
+  amass: red_teaming.recon.subdomain_enum_passive
+  shodan: red_teaming.recon.shodan_query
+  maltego: red_teaming.recon.maltego_graph
+
+  # --- red: scanning ---
+  nmap: red_teaming.scanning.port_scan_tcp
+  masscan: red_teaming.scanning.port_scan_masscan
+  zmap: red_teaming.scanning.port_scan_zmap
+  netdiscover: red_teaming.recon.host_discovery
+  arp-scan: red_teaming.recon.host_discovery
+  enum4linux: red_teaming.scanning.smb_enum
+  smbclient: red_teaming.scanning.smb_enum
+  rpcclient: red_teaming.scanning.rpc_enum
+  ldapsearch: red_teaming.scanning.ldap_enum
+  snmpwalk: red_teaming.scanning.snmp_enum
+  nbtscan: red_teaming.scanning.netbios_enum
+
+  # --- red: vulnerability ---
+  openvas: red_teaming.vulnerability.openvas_scan
+  nuclei: red_teaming.vulnerability.nuclei_scan
+  nikto: red_teaming.vulnerability.nikto_scan
+  sqlmap: red_teaming.vulnerability.sqlmap_scan
+  searchsploit: red_teaming.vulnerability.searchsploit_query
+  wpscan: red_teaming.vulnerability.wpscan
+  joomscan: red_teaming.vulnerability.joomscan
+
+  # --- red: exploitation ---
+  msfconsole: red_teaming.exploitation.metasploit_exploit
+  msfvenom: red_teaming.exploitation.msfvenom_payload
+  pwntools: red_teaming.exploitation.pwntools_exploit
+  ROPgadget: red_teaming.exploitation.ropgadget
+  radare2: red_teaming.exploitation.radare2_analysis
+  r2: red_teaming.exploitation.radare2_analysis
+  ghidra: red_teaming.exploitation.ghidra_analysis
+  gdb: red_teaming.exploitation.gdb_analysis
+
+  # --- red: credentials ---
+  hydra: red_teaming.credentials.hydra_bruteforce
+  medusa: red_teaming.credentials.medusa_bruteforce
+  john: red_teaming.credentials.john_crack
+  hashcat: red_teaming.credentials.hashcat_crack
+  crunch: red_teaming.credentials.crunch_wordlist
+  cewl: red_teaming.credentials.cewl_wordlist
+  responder: red_teaming.credentials.responder_listen
+  netexec: red_teaming.credentials.netexec
+  crackmapexec: red_teaming.credentials.crackmapexec
+
+  # --- red: wireless ---
+  aircrack-ng: red_teaming.wireless.aircrack_scan
+  kismet: red_teaming.wireless.kismet
+  reaver: red_teaming.wireless.reaver_wps
+  wifite: red_teaming.wireless.wifite
+  hostapd-wpe: red_teaming.wireless.hostapd_wpe
+
+  # --- red: mitm ---
+  bettercap: red_teaming.mitm.bettercap
+  ettercap: red_teaming.mitm.ettercap
+  arpspoof: red_teaming.mitm.arpspoof
+  dnsspoof: red_teaming.mitm.dnsspoof
+  hping3: red_teaming.mitm.hping3
+  scapy: red_teaming.mitm.scapy_packet_craft
+
+  # --- red: web/api ---
+  commix: red_teaming.web_api.commix
+  XSStrike: red_teaming.web_api.xsstrike
+  ffuf: red_teaming.web_api.ffuf
+  gobuster: red_teaming.web_api.gobuster
+  dirb: red_teaming.web_api.dirb
+  wfuzz: red_teaming.web_api.wfuzz
+
+  # --- red: post ---
+  linpeas: red_teaming.post_exploitation.linpeas
+  linenum: red_teaming.post_exploitation.linenum
+  pspy: red_teaming.post_exploitation.pspy
+  chisel: red_teaming.post_exploitation.chisel_pivot
+  ligolo-ng: red_teaming.post_exploitation.ligolo_pivot
+  socat: red_teaming.post_exploitation.socat_pivot
+  nc: red_teaming.post_exploitation.netcat_session
+  netcat: red_teaming.post_exploitation.netcat_session
+  proxychains: red_teaming.post_exploitation.proxychains
+
+  # --- red: c2 ---
+  sliver: red_teaming.c2.sliver
+  mythic: red_teaming.c2.mythic
+  empire: red_teaming.c2.empire
+  havoc: red_teaming.c2.havoc
+  merlin: red_teaming.c2.merlin
+  poshc2: red_teaming.c2.poshc2
+
+  # --- red: linux-specific ---
+  bloodhound: red_teaming.linux_specific.bloodhound_ingest
+  evil-winrm: red_teaming.linux_specific.evil_winrm
+
+  # --- blue ---
+  yara: blue_teaming.yara_scan
+  suricata: blue_teaming.ids_ips_control
+  zeek: blue_teaming.pcap_analysis
+
+  # --- code ---
+  python: code_generation.python.execute
+  python3: code_generation.python.execute
+  pip: code_generation.python.pip_install_public
+  pip3: code_generation.python.pip_install_public
+  poetry: code_generation.python.poetry_use
+  ruff: code_generation.python.scan_with_ruff
+  bandit: code_generation.python.scan_with_bandit
+  cargo: code_generation.rust.cargo_build
+  rustc: code_generation.rust.cargo_build
+  clippy-driver: code_generation.rust.scan_with_clippy
+  cargo-audit: code_generation.rust.scan_with_cargo_audit
+
+# ---------------------------------------------------------------------
+# SUBCOMMAND MAP  (argv[0] + argv[1] → flag path, precedence over command_map)
+# ---------------------------------------------------------------------
+command_map_subcommand:
+
+  apt:
+    install: linux_administration.package_install
+    remove: linux_administration.package_remove
+    purge: linux_administration.package_remove
+    autoremove: linux_administration.package_remove
+
+  dnf:
+    install: linux_administration.package_install
+    remove: linux_administration.package_remove
+    erase: linux_administration.package_remove
+
+  cargo:
+    new: code_generation.rust.cargo_new
+    init: code_generation.rust.cargo_init
+    build: code_generation.rust.cargo_build
+    check: code_generation.rust.cargo_check
+    test: code_generation.rust.cargo_test
+    run: code_generation.rust.cargo_run
+    bench: code_generation.rust.cargo_bench
+    clean: code_generation.rust.cargo_clean
+    doc: code_generation.rust.cargo_doc
+    add: code_generation.rust.cargo_add_crate
+    update: code_generation.rust.cargo_update
+    publish: code_generation.rust.cargo_publish
+    install: code_generation.rust.install_from_crates_io
+
+  pip:
+    install: code_generation.python.pip_install_public
+    uninstall: linux_administration.package_remove
+    download: code_generation.python.pip_install_public
+
+  nmap:
+    "-sV": red_teaming.recon.service_fingerprint
+    "-sn": red_teaming.recon.host_discovery
+    "-sU": red_teaming.scanning.port_scan_udp
+
+  sqlmap:
+    "--os-shell": red_teaming.exploitation.metasploit_exploit
+    "--dump": red_teaming.vulnerability.sqlmap_scan
+
+  msfconsole:
+    "-r": red_teaming.exploitation.metasploit_exploit
