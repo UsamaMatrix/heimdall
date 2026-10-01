@@ -1,9 +1,12 @@
 import hashlib
+import copy
 import json
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import heimdald as h
@@ -46,6 +49,80 @@ class DaemonTests(unittest.TestCase):
             self.assertEqual(daemon.dispatch({'op': 'verdict', 'cmd': 123}, None)['verdict'], 'DENY')
             self.assertIsNone(daemon.dispatch({'op': 'verdict', 'cmd': 'rm file'}, None)['token'])
             self.assertFalse(daemon.dispatch({'op': 'mode_set', 'mode': 'direct', 'phrase': ''}, None)['ok'])
+
+    def test_confirmation_contract_and_strict_boolean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            daemon = h.Daemon(self.policy, b'x' * 32,
+                              {'history': base / 'history', 'mode_file': base / 'mode'}, True)
+            request = {'op': 'verdict', 'cmd': 'nmap 127.0.0.1'}
+            ask = daemon.dispatch(request, None)
+            self.assertEqual(ask['confirm_phrase'], 'I UNDERSTAND THE RISK')
+            for confirm in (False, 'true', 1):
+                result = daemon.dispatch(dict(request, confirm=confirm, phrase=ask['confirm_phrase']), None)
+                self.assertEqual(result['verdict'], 'ASK')
+                self.assertIsNone(result['token'])
+            approved = daemon.dispatch(dict(request, confirm=True, phrase=ask['confirm_phrase']), None)
+            self.assertEqual(approved['verdict'], 'ALLOW')
+            self.assertTrue(approved['confirmed'])
+            self.assertTrue(h.verify_token(daemon.secret, approved['token'], request['cmd'], 'direct'))
+            denied = daemon.dispatch({'op': 'verdict', 'cmd': 'rm -rf /', 'confirm': True,
+                                      'phrase': ask['confirm_phrase']}, None)
+            self.assertEqual(denied['verdict'], 'DENY')
+            self.assertIsNone(denied['token'])
+
+    def test_sandbox_confirmation_and_destructive_phrase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            policy = copy.deepcopy(self.policy)
+            policy['defaults']['warn_confirmation_phrase'] = 'CUSTOM PHRASE'
+            daemon = h.Daemon(policy, b'x' * 32,
+                              {'history': base / 'history', 'mode_file': base / 'mode'}, True)
+            self.assertEqual(daemon.dispatch({'op': 'verdict', 'cmd': 'nmap localhost'}, None)['confirm_phrase'], 'CUSTOM PHRASE')
+            ask = daemon.dispatch({'op': 'verdict', 'cmd': 'python3 script.py'}, None)
+            self.assertEqual(ask['mode'], 'sandbox')
+            self.assertIsNone(ask['confirm_phrase'])
+            approved = daemon.dispatch({'op': 'verdict', 'cmd': 'python3 script.py', 'confirm': True}, None)
+            self.assertEqual(approved['verdict'], 'ALLOW')
+            self.assertEqual(approved['mode'], 'sandbox')
+            policy['command_map']['labtool'] = 'destructive_study.malware.static_analysis'
+            self.assertEqual(daemon.dispatch({'op': 'verdict', 'cmd': 'labtool'}, None)['verdict'], 'DENY')
+            policy['lab_mode']['enabled'] = True
+            policy['domains']['destructive_study']['enabled'] = True
+            policy['domains']['destructive_study']['flags']['malware']['enabled'] = True
+            ask = daemon.dispatch({'op': 'verdict', 'cmd': 'labtool'}, None)
+            self.assertEqual(ask['confirm_phrase'], 'I HAVE WRITTEN AUTHORIZATION')
+            self.assertIsNone(ask['token'])
+
+    def test_history_failure_revokes_authorization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            for dev in (True, False):
+                daemon = h.Daemon(self.policy, b'x' * 32,
+                                  {'history': base / 'history', 'mode_file': base / 'mode'}, dev)
+                with patch.object(daemon.history, 'write', side_effect=OSError('disk full')):
+                    result = daemon.dispatch({'op': 'verdict', 'cmd': 'nmap localhost',
+                                               'confirm': True, 'phrase': 'I UNDERSTAND THE RISK'}, None)
+                    self.assertEqual(result['verdict'], 'DENY')
+                    self.assertIsNone(result['token'])
+                    self.assertFalse(result['confirmed'])
+
+    def test_socket_group_is_applied_on_unix_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            socket_path = base / 'bifrost.sock'
+            daemon = h.Daemon(self.policy, b'x' * 32,
+                              {'history': base / 'history', 'mode_file': base / 'mode'},
+                              True, socket_group='heimdall')
+            daemon.running = False
+            group_module = types.SimpleNamespace(getgrnam=lambda name: types.SimpleNamespace(gr_gid=123))
+            with patch.dict(sys.modules, {'grp': group_module}), patch.object(h.os, 'name', 'posix'), \
+                    patch.object(h.socket, 'AF_UNIX', 1, create=True), patch.object(h.socket, 'socket'), \
+                    patch.object(h.os, 'chown', create=True) as chown, \
+                    patch.object(h.os, 'chmod') as chmod, patch('builtins.print'):
+                daemon.serve(socket_path)
+                chown.assert_called_once_with(socket_path, -1, 123)
+                chmod.assert_called_once_with(str(socket_path), 0o660)
 
 
 if __name__ == '__main__':

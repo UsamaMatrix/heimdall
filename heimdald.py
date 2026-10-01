@@ -47,7 +47,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "2.0.0-m1"
+VERSION = "2.0.0-m2"
 
 BANNER = r"""
   H   H  EEEEE  III  M   M  DDDD    AAA   L      L
@@ -135,6 +135,11 @@ def load_policy(path: Path, dev: bool) -> dict:
         if req not in policy:
             raise PolicyError(f"policy missing required section: {req}")
     try:
+        defaults = policy.get("defaults", {})
+        for key in ("warn_confirmation_phrase", "mode_switch_confirmation_phrase",
+                    "destructive_confirmation_phrase"):
+            if key in defaults and (not isinstance(defaults[key], str) or not defaults[key].strip()):
+                raise ValueError(f"{key} must be a nonempty string")
         for section in ("runtime_mode", "domains", "command_map"):
             if not isinstance(policy[section], dict):
                 raise ValueError(f"{section} must be a mapping")
@@ -354,7 +359,7 @@ def _load_or_create_secret(path: Path) -> bytes:
         return path.read_bytes()
     path.parent.mkdir(parents=True, exist_ok=True)
     secret = os.urandom(32)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
     try:
         os.write(fd, secret)
     finally:
@@ -451,11 +456,12 @@ def peer_uid(conn: socket.socket):
         return None
 
 class Daemon:
-    def __init__(self, policy: dict, secret: bytes, paths: dict, dev: bool):
+    def __init__(self, policy: dict, secret: bytes, paths: dict, dev: bool, socket_group=None):
         self.policy = policy
         self.secret = secret
         self.paths = paths
         self.dev = dev
+        self.socket_group = socket_group
         self.history = History(paths["history"])
         self.default_mode = self._read_mode_file()
         self.running = True
@@ -529,9 +535,28 @@ class Daemon:
 
     def _op_verdict(self, req: dict, uid) -> dict:
         if req.get("request_mode") is not None:
-            return {"verdict": VERDICT_DENY, "reason": "request_mode overrides are not supported in M1"}
+            return {"verdict": VERDICT_DENY, "reason": "request_mode overrides are not supported"}
         cmd = req.get("cmd", "")
         result = resolve(self.policy, cmd, self.default_mode)
+        result["confirm_phrase"] = None
+        result["confirmed"] = False
+        if result["verdict"] == VERDICT_ASK:
+            defaults = self.policy.get("defaults", {})
+            flag = result.get("flag_path") or ""
+            if flag.startswith("destructive_study."):
+                result["confirm_phrase"] = defaults.get(
+                    "destructive_confirmation_phrase", "I HAVE WRITTEN AUTHORIZATION")
+            elif result.get("mode") == "direct":
+                result["confirm_phrase"] = defaults.get(
+                    "warn_confirmation_phrase", defaults.get(
+                        "mode_switch_confirmation_phrase", "I UNDERSTAND THE RISK"))
+            if req.get("confirm") is True:
+                expected = result["confirm_phrase"]
+                if expected is None or req.get("phrase") == expected:
+                    result["verdict"] = VERDICT_ALLOW
+                    result["confirmed"] = True
+                else:
+                    result["reason"] = "confirmation phrase mismatch"
         # ASK is pending confirmation, not an authorization token.
         if result["verdict"] == VERDICT_ALLOW and result["mode"]:
             result["token"] = mint_token(self.secret, cmd, result["mode"])
@@ -552,13 +577,13 @@ class Daemon:
                 "flag_path": result["flag_path"],
                 "message_key": result.get("message_key"),
                 "reason": result.get("reason"),
+                "confirmed": result["confirmed"],
                 "policy_id": self.policy.get("policy_id"),
             })
         except Exception as e:
-            # fail-closed in prod
-            if not self.dev:
-                return {"verdict": VERDICT_DENY,
-                        "reason": f"history write failed: {e}"}
+            # Execution is now possible: never authorize without an audit record.
+            result.update(verdict=VERDICT_DENY, token=None, confirmed=False,
+                          reason=f"history write failed: {e}")
         return result
 
     def _op_mode_show(self) -> dict:
@@ -616,6 +641,9 @@ class Daemon:
                     probe.close()
             srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             srv.bind(str(socket_path))
+            if self.socket_group is not None:
+                import grp
+                os.chown(socket_path, -1, grp.getgrnam(self.socket_group).gr_gid)
             os.chmod(str(socket_path), 0o660)
             endpoint = str(socket_path)
         srv.listen(8)
@@ -707,6 +735,7 @@ def main():
                     help="dev mode: no root, local paths, verbose")
     ap.add_argument("--policy", type=Path, default=None,
                     help="path to safety.yaml (default: next to this file)")
+    ap.add_argument("--socket-group", help="existing Linux group allowed to connect to the Unix socket")
     ap.add_argument("--test", metavar="CMD",
                     help="run one verdict for CMD and exit")
     ap.add_argument("--selftest", action="store_true",
@@ -726,6 +755,14 @@ def main():
         cmd_install_stub()
 
     _root_check(args.dev)
+    if args.socket_group:
+        if os.name != 'posix':
+            ap.error("--socket-group requires Linux")
+        import grp
+        try:
+            grp.getgrnam(args.socket_group)
+        except KeyError:
+            ap.error(f"socket group does not exist: {args.socket_group}")
 
     paths = default_paths(args.dev)
     policy_path = args.policy or paths["policy"]
@@ -755,7 +792,7 @@ def main():
             pass
 
     secret = _load_or_create_secret(paths["secret"])
-    daemon = Daemon(policy, secret, paths, args.dev)
+    daemon = Daemon(policy, secret, paths, args.dev, socket_group=args.socket_group)
 
     def _stop(signum, frame):
         daemon.running = False
