@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import heimdall as c
 import heimdald as d
+import executor as e
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -133,6 +134,21 @@ class ClientTests(unittest.TestCase):
             script.write_text("import time\ntime.sleep(5)\n", encoding='utf-8')
             self.assertEqual(c.execute(command, 0.1)[0], 124)
         self.assertEqual(c.execute('ls; echo nope')[0], 2)
+
+    def test_bwrap_mounts_current_directory_before_chdir(self):
+        cwd = '/home/kali/Desktop/heimdall'
+        with patch.object(e.shutil, 'which', return_value='/usr/bin/bwrap'), \
+                patch.object(e.os.path, 'exists', return_value=True), \
+                patch.object(e.os.path, 'isdir', return_value=True):
+            argv = e._build_bwrap_argv(['python3', 'hello.py'], {'rw_paths': []}, cwd=cwd)
+        self.assertLess(argv.index('--bind'), argv.index('--chdir'))
+        self.assertIn('--dir', argv)
+        self.assertIn('/home/kali/Desktop', argv)
+        self.assertIn(cwd, argv)
+        bind_index = argv.index('--bind')
+        self.assertEqual(argv[bind_index:bind_index + 3], ['--bind', cwd, cwd])
+        chdir_index = argv.index('--chdir')
+        self.assertEqual(argv[chdir_index:chdir_index + 2], ['--chdir', cwd])
 
     def test_old_daemon_and_bad_responses(self):
         client = c.DaemonClient(tcp=('127.0.0.1', 1))

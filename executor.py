@@ -10,6 +10,7 @@ Modes:
 """
 
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
@@ -32,6 +33,22 @@ class SandboxUnavailable(Exception):
 
 def _expand(path: str) -> str:
     return os.path.expanduser(os.path.expandvars(path))
+
+
+def _mkdir_chain_args(path: str):
+    """Return bwrap --dir args needed before binding a deep destination."""
+    parts = []
+    current = posixpath.normpath(path)
+    while current not in ("/", ""):
+        parts.append(current)
+        parent = posixpath.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    args = []
+    for item in reversed(parts):
+        args += ["--dir", item]
+    return args
 
 
 def _build_bwrap_argv(cmd_argv, cfg, cwd=None):
@@ -64,6 +81,9 @@ def _build_bwrap_argv(cmd_argv, cfg, cwd=None):
             argv += ["--bind", expanded, expanded]
 
     if cwd and os.path.isdir(cwd):
+        cwd = posixpath.normpath(cwd) if cwd.startswith("/") else os.path.abspath(cwd)
+        argv += _mkdir_chain_args(posixpath.dirname(cwd))
+        argv += ["--bind", cwd, cwd]
         argv += ["--chdir", cwd]
 
     argv += ["--die-with-parent", "--new-session"]
