@@ -47,7 +47,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "2.0.0-m2"
+VERSION = "2.0.0-m3"
 
 BANNER = r"""
   H   H  EEEEE  III  M   M  DDDD    AAA   L      L
@@ -204,6 +204,35 @@ def _walk_flag(policy: dict, flag_path: str):
         node = sub
         i += 1
     return None, "empty flag path"
+
+def _flag_enabled(policy: dict, flag_path: str) -> bool:
+    v, err = _walk_flag(policy, flag_path)
+    return v is True and err is None
+
+SCANNER_SPECS = {
+    "code_generation.python.execute": {
+        "language": "python",
+        "scanners": [
+            ("bandit", "code_generation.python.scan_with_bandit"),
+            ("ruff", "code_generation.python.scan_with_ruff"),
+        ],
+        "block_flag": "code_generation.python.block_on_scan_fail",
+    },
+    "code_generation.rust.cargo_run": {
+        "language": "rust",
+        "scanners": [
+            ("clippy", "code_generation.rust.scan_with_clippy"),
+        ],
+        "block_flag": "code_generation.rust.block_on_scan_fail",
+    },
+    "code_generation.rust.cargo_run_release": {
+        "language": "rust",
+        "scanners": [
+            ("clippy", "code_generation.rust.scan_with_clippy"),
+        ],
+        "block_flag": "code_generation.rust.block_on_scan_fail",
+    },
+}
 
 def _resolve_flag_path(policy: dict, command: str):
     """Return (flag_path, error_reason)."""
@@ -531,7 +560,36 @@ class Daemon:
             return self._op_mode_show()
         if op == "mode_set":
             return self._op_mode_set(req, uid)
+        if op == "exec_start":
+            return self._op_exec_start(req, uid)
+        if op == "exec_end":
+            return self._op_exec_end(req, uid)
         return {"error": f"unknown op '{op}'"}
+
+    def _build_sandbox_config(self) -> dict:
+        sb = self.policy.get("runtime_mode", {}).get("sandbox", {})
+        return {
+            "impl": sb.get("impl", "bwrap"),
+            "net": sb.get("net", "none"),
+            "ro_root": sb.get("ro_root", True),
+            "rw_paths": sb.get("rw_paths", []),
+            "unshare": sb.get("unshare", ["pid", "uts", "ipc", "cgroup"]),
+            "cap_drop": sb.get("cap_drop", ["ALL"]),
+        }
+
+    def _build_scan_config(self, flag_path: str):
+        spec = SCANNER_SPECS.get(flag_path)
+        if not spec:
+            return None
+        active = [name for name, path in spec["scanners"]
+                  if _flag_enabled(self.policy, path)]
+        if not active:
+            return None
+        return {
+            "language": spec["language"],
+            "scanners": active,
+            "block_on_fail": _flag_enabled(self.policy, spec["block_flag"]),
+        }
 
     def _op_verdict(self, req: dict, uid) -> dict:
         if req.get("request_mode") is not None:
@@ -560,6 +618,12 @@ class Daemon:
         # ASK is pending confirmation, not an authorization token.
         if result["verdict"] == VERDICT_ALLOW and result["mode"]:
             result["token"] = mint_token(self.secret, cmd, result["mode"])
+        if result.get("mode") == "sandbox":
+            result["sandbox_config"] = self._build_sandbox_config()
+        if result.get("flag_path"):
+            scan_cfg = self._build_scan_config(result["flag_path"])
+            if scan_cfg:
+                result["scan_config"] = scan_cfg
         # enrich with message body if message_key present
         if result.get("message_key"):
             body = self.policy.get("messages", {}).get(result["message_key"])
@@ -585,6 +649,50 @@ class Daemon:
             result.update(verdict=VERDICT_DENY, token=None, confirmed=False,
                           reason=f"history write failed: {e}")
         return result
+
+    def _op_exec_start(self, req: dict, uid) -> dict:
+        token = req.get("token", "")
+        cmd = req.get("cmd", "")
+        mode = req.get("mode", "")
+        if not verify_token(self.secret, token, cmd, mode):
+            return {"ok": False, "error": "bad token"}
+        try:
+            self.history.write({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "peer_uid": uid,
+                "op": "exec_start",
+                "command_sha256": hashlib.sha256(cmd.encode()).hexdigest(),
+                "command_preview": cmd[:160],
+                "mode": mode,
+                "policy_id": self.policy.get("policy_id"),
+            })
+        except Exception as exc:
+            return {"ok": False, "error": f"history write failed: {exc}"}
+        return {"ok": True}
+
+    def _op_exec_end(self, req: dict, uid) -> dict:
+        token = req.get("token", "")
+        cmd = req.get("cmd", "")
+        mode = req.get("mode", "")
+        if not verify_token(self.secret, token, cmd, mode):
+            return {"ok": False, "error": "bad token"}
+        try:
+            self.history.write({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "peer_uid": uid,
+                "op": "exec_end",
+                "command_sha256": hashlib.sha256(cmd.encode()).hexdigest(),
+                "mode": mode,
+                "rc": req.get("rc"),
+                "duration_ms": req.get("duration_ms"),
+                "stdout_sha256": req.get("stdout_sha256"),
+                "stderr_sha256": req.get("stderr_sha256"),
+                "sandboxed": bool(req.get("sandboxed", False)),
+                "policy_id": self.policy.get("policy_id"),
+            })
+        except Exception as exc:
+            return {"ok": False, "error": f"history write failed: {exc}"}
+        return {"ok": True}
 
     def _op_mode_show(self) -> dict:
         return {

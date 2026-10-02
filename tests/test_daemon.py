@@ -94,6 +94,39 @@ class DaemonTests(unittest.TestCase):
             self.assertEqual(ask['confirm_phrase'], 'I HAVE WRITTEN AUTHORIZATION')
             self.assertIsNone(ask['token'])
 
+    def test_m3_sandbox_scan_config_and_exec_audit_ops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            daemon = h.Daemon(self.policy, b'x' * 32,
+                              {'history': base / 'history', 'mode_file': base / 'mode'}, True)
+            ask = daemon.dispatch({'op': 'verdict', 'cmd': 'python3 script.py'}, 1000)
+            self.assertEqual(ask['mode'], 'sandbox')
+            self.assertIn('sandbox_config', ask)
+            self.assertEqual(ask['sandbox_config']['impl'], 'bwrap')
+            self.assertIn('scan_config', ask)
+            self.assertEqual(ask['scan_config']['language'], 'python')
+            self.assertIn('bandit', ask['scan_config']['scanners'])
+            approved = daemon.dispatch({'op': 'verdict', 'cmd': 'python3 script.py',
+                                        'confirm': True}, 1000)
+            self.assertEqual(approved['verdict'], 'ALLOW')
+            start = daemon.dispatch({'op': 'exec_start', 'cmd': 'python3 script.py',
+                                     'mode': 'sandbox', 'token': approved['token']}, 1000)
+            self.assertTrue(start['ok'])
+            end = daemon.dispatch({'op': 'exec_end', 'cmd': 'python3 script.py',
+                                   'mode': 'sandbox', 'token': approved['token'],
+                                   'rc': 3, 'duration_ms': 12,
+                                   'stdout_sha256': '0' * 64,
+                                   'stderr_sha256': '1' * 64,
+                                   'sandboxed': True}, 1000)
+            self.assertTrue(end['ok'])
+            bad = daemon.dispatch({'op': 'exec_start', 'cmd': 'python3 other.py',
+                                   'mode': 'sandbox', 'token': approved['token']}, 1000)
+            self.assertFalse(bad['ok'])
+            records = [json.loads(line) for line in next((base / 'history').glob('*.jsonl')).read_text().splitlines()]
+            self.assertEqual(records[-2]['op'], 'exec_start')
+            self.assertEqual(records[-1]['op'], 'exec_end')
+            self.assertTrue(records[-1]['sandboxed'])
+
     def test_history_failure_revokes_authorization(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
