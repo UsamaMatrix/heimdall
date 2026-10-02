@@ -620,7 +620,8 @@ def _execute_with_policy(pal, daemon, cmd, verdict, dry_run, timeout, ascii_only
     mode = verdict.get("mode", "direct")
     sandbox_config = verdict.get("sandbox_config")
     with Bifrost(pal, f"executing ({mode})", ascii_only):
-        result = run_command(cmd, mode, sandbox_config, timeout=timeout)
+        result = run_command(
+            cmd, mode, sandbox_config, timeout=timeout, cwd=os.getcwd())
     if result.sandboxed:
         print(f"  {pal.dim('sandboxed via bwrap')}")
     _print_output(pal, result.rc, result.stdout, result.stderr)

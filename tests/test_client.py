@@ -76,7 +76,7 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(c.cmd_one_command(self.pal, daemon, 'ls -la', False, True, 7), result)
                 daemon.verdict.assert_called_with('ls -la', confirm=True, phrase='EXACT PHRASE')
                 if result == 0:
-                    run.assert_called_once_with('ls -la', 'direct', None, timeout=7)
+                    run.assert_called_once_with('ls -la', 'direct', None, timeout=7, cwd=os.getcwd())
                 else:
                     run.assert_not_called()
 
@@ -254,7 +254,7 @@ class LiveIntegrationTests(unittest.TestCase):
                                                   'sandboxed': False,
                                                   'duration_ms': 1})()
                 self.assertEqual(c.cmd_agent(c.Palette(False), self.client, llm, 'list files', False, 3, True, 7), 0)
-                run.assert_called_once_with('ls -la', 'direct', None, timeout=7)
+                run.assert_called_once_with('ls -la', 'direct', None, timeout=7, cwd=os.getcwd())
             observation = payloads[1]['messages'][-1]['content']
             self.assertIn('exit=1', observation)
             self.assertIn('test failure', observation)
