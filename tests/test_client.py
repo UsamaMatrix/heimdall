@@ -47,17 +47,17 @@ class ClientTests(unittest.TestCase):
     def test_authorization_binding(self):
         self.assertIsNone(c.authorization_error(allowed(), 'ls -la'))
         for verdict in ({'verdict': 'ALLOW', 'mode': 'direct'},
-                        allowed('cat file'), allowed(mode='sandbox'),
+                        allowed('cat file'),
                         {'verdict': 'DEFER'}, {'verdict': 'DENY'}):
             self.assertIsNotNone(c.authorization_error(verdict, 'ls -la'))
-        self.assertIsNone(c.authorization_error(allowed(mode='sandbox'), 'ls -la', True))
+        self.assertIsNone(c.authorization_error(allowed(mode='sandbox'), 'ls -la'))
 
     def test_one_command_denies_defer_missing_token_and_sandbox(self):
         for response in ({'verdict': 'DENY'}, {'verdict': 'DEFER'},
-                         {'verdict': 'ALLOW', 'mode': 'direct'}, allowed(mode='sandbox')):
+                         {'verdict': 'ALLOW', 'mode': 'direct'}):
             daemon = Mock()
             daemon.verdict.return_value = response
-            with self.subTest(response=response), patch.object(c, 'execute') as run:
+            with self.subTest(response=response), patch.object(c, 'run_command') as run:
                 self.assertNotEqual(c.cmd_one_command(self.pal, daemon, 'ls -la', False, True), 0)
                 run.assert_not_called()
 
@@ -66,14 +66,17 @@ class ClientTests(unittest.TestCase):
         ask = {'verdict': 'ASK', 'mode': 'direct', 'confirm_phrase': 'EXACT PHRASE',
                'flag_path': 'test.write', 'token': None}
         for reply, result in ((allowed(), 0), ({'verdict': 'ASK', 'mode': 'direct'}, 4),
-                              (allowed(mode='sandbox'), 4), (allowed('cat file'), 4)):
+                              (allowed('cat file'), 4)):
             daemon.verdict.side_effect = [ask, reply]
+            daemon.request.return_value = {'ok': True}
             with self.subTest(reply=reply), patch('builtins.input', return_value='EXACT PHRASE'), \
-                    patch.object(c, 'execute', return_value=(0, '', '')) as run:
+                    patch.object(c, 'run_command') as run:
+                run.return_value = type('R', (), {'rc': 0, 'stdout': '', 'stderr': '',
+                                                  'sandboxed': False, 'duration_ms': 1})()
                 self.assertEqual(c.cmd_one_command(self.pal, daemon, 'ls -la', False, True, 7), result)
                 daemon.verdict.assert_called_with('ls -la', confirm=True, phrase='EXACT PHRASE')
                 if result == 0:
-                    run.assert_called_once_with('ls -la', timeout=7)
+                    run.assert_called_once_with('ls -la', 'direct', None, timeout=7)
                 else:
                     run.assert_not_called()
 
@@ -81,23 +84,23 @@ class ClientTests(unittest.TestCase):
         daemon = Mock()
         daemon.verdict.return_value = {'verdict': 'ASK', 'mode': 'direct',
                                       'confirm_phrase': 'EXACT', 'token': None}
-        with patch('builtins.input', side_effect=EOFError), patch.object(c, 'execute') as run:
+        with patch('builtins.input', side_effect=EOFError), patch.object(c, 'run_command') as run:
             self.assertEqual(c.cmd_one_command(self.pal, daemon, 'ls', False, True), 3)
             run.assert_not_called()
         daemon.verdict.return_value = allowed()
-        with patch.object(c, 'execute') as run:
+        with patch.object(c, 'run_command') as run:
             self.assertEqual(c.cmd_one_command(self.pal, daemon, 'ls -la', True, True), 0)
             run.assert_not_called()
 
     def test_agent_uses_same_execution_gate(self):
-        for verdict in (allowed(mode='sandbox'), {'verdict': 'ALLOW', 'mode': 'direct'},
+        for verdict in ({'verdict': 'ALLOW', 'mode': 'direct'},
                         {'verdict': 'DEFER'}):
             daemon = Mock()
             daemon.mode_show.return_value = {'mode': 'hybrid'}
             daemon.verdict.return_value = verdict
             llm = Mock()
             llm.propose.return_value = {'action': 'execute', 'command': 'ls -la'}
-            with self.subTest(verdict=verdict), patch.object(c, 'execute') as run:
+            with self.subTest(verdict=verdict), patch.object(c, 'run_command') as run:
                 self.assertNotEqual(c.cmd_agent(self.pal, daemon, llm, 'list files', False, 2, True), 0)
                 run.assert_not_called()
 
@@ -105,12 +108,17 @@ class ClientTests(unittest.TestCase):
         daemon = Mock()
         daemon.mode_show.return_value = {'mode': 'hybrid'}
         daemon.verdict.return_value = allowed()
+        daemon.request.return_value = {'ok': True}
         llm = Mock()
         llm.propose.return_value = {'action': 'execute', 'command': 'ls -la'}
-        with patch.object(c, 'execute', return_value=(0, 'same', '')) as run:
+        result = type('R', (), {'rc': 0, 'stdout': 'same', 'stderr': '',
+                                'sandboxed': False, 'duration_ms': 1})()
+        with patch.object(c, 'run_command', return_value=result) as run:
             self.assertEqual(c.cmd_agent(self.pal, daemon, llm, 'list', False, 10, True), 5)
             self.assertEqual(run.call_count, 2)
-        with patch.object(c, 'execute', return_value=(0, '', '')) as run:
+        result = type('R', (), {'rc': 0, 'stdout': '', 'stderr': '',
+                                'sandboxed': False, 'duration_ms': 1})()
+        with patch.object(c, 'run_command', return_value=result) as run:
             self.assertEqual(c.cmd_agent(self.pal, daemon, llm, 'list', False, 1, True), 5)
             self.assertEqual(run.call_count, 1)
 
@@ -240,9 +248,13 @@ class LiveIntegrationTests(unittest.TestCase):
         llm = c.LLMClient(f'http://127.0.0.1:{server.server_port}/v1/chat/completions', 'test-model', 5)
         try:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
-                    patch.object(c, 'execute', return_value=(1, 'x' * 3000, 'test failure')) as run:
+                    patch.object(c, 'run_command') as run:
+                run.return_value = type('R', (), {'rc': 1, 'stdout': 'x' * 3000,
+                                                  'stderr': 'test failure',
+                                                  'sandboxed': False,
+                                                  'duration_ms': 1})()
                 self.assertEqual(c.cmd_agent(c.Palette(False), self.client, llm, 'list files', False, 3, True, 7), 0)
-                run.assert_called_once_with('ls -la', timeout=7)
+                run.assert_called_once_with('ls -la', 'direct', None, timeout=7)
             observation = payloads[1]['messages'][-1]['content']
             self.assertIn('exit=1', observation)
             self.assertIn('test failure', observation)
