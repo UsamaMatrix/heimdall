@@ -800,6 +800,12 @@ def cmd_selftest(policy: dict):
         # (command, expected verdict)
         ("ls -la", VERDICT_ALLOW),
         ("cat /etc/hostname", VERDICT_ALLOW),
+        ("uname -a", VERDICT_ALLOW),
+        ("df -h", VERDICT_ALLOW),
+        ("free -h", VERDICT_ALLOW),
+        ("which python3", VERDICT_ALLOW),
+        ("head /etc/passwd", VERDICT_ALLOW),
+        ("journalctl -n 50", VERDICT_ALLOW),
         ("rm -rf /", VERDICT_DENY),                       # global_deny
         ("rm -rf /home/user/file", VERDICT_ASK),          # file_delete=warn
         ("nmap 10.0.0.1", VERDICT_ASK),                   # port_scan_tcp=warn

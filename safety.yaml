@@ -209,6 +209,9 @@ domains:
     enabled: true
     flags:
       file_read: true
+      system_info: true
+      disk_info: true
+      memory_info: true
       file_write: true
       file_delete: { action: warn, message_key: destructive }
       chmod_chown: true
@@ -677,6 +680,13 @@ command_map:
   # --- linux admin ---
   ls: linux_administration.file_read
   cat: linux_administration.file_read
+  head: linux_administration.file_read
+  tail: linux_administration.file_read
+  which: linux_administration.file_read
+  uname: linux_administration.system_info
+  df: linux_administration.disk_info
+  free: linux_administration.memory_info
+  journalctl: linux_administration.logs_read
   rm: linux_administration.file_delete
   chmod: linux_administration.chmod_chown
   chown: linux_administration.chmod_chown
