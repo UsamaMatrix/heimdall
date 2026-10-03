@@ -118,12 +118,32 @@ class ClientTests(unittest.TestCase):
                                 'sandboxed': False, 'duration_ms': 1})()
         with patch.object(c, 'run_command', return_value=result) as run:
             self.assertEqual(c.cmd_agent(self.pal, daemon, llm, 'list', False, 10, True), 5)
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 1)
         result = type('R', (), {'rc': 0, 'stdout': '', 'stderr': '',
                                 'sandboxed': False, 'duration_ms': 1})()
         with patch.object(c, 'run_command', return_value=result) as run:
             self.assertEqual(c.cmd_agent(self.pal, daemon, llm, 'list', False, 1, True), 5)
             self.assertEqual(run.call_count, 1)
+
+
+    def test_duplicate_command_can_recover_with_new_command(self):
+        daemon = Mock()
+        daemon.mode_show.return_value = {'mode': 'hybrid'}
+        daemon.verdict.side_effect = lambda command: allowed(command)
+        daemon.request.return_value = {'ok': True}
+        llm = Mock()
+        llm.propose.side_effect = [
+            {'action': 'execute', 'command': 'curl -I https://example.com'},
+            {'action': 'execute', 'command': 'curl -I https://example.com'},
+            {'action': 'execute', 'command': 'curl https://example.com/robots.txt'},
+            {'action': 'done', 'summary': 'ok'},
+        ]
+        result = type('R', (), {'rc': 0, 'stdout': 'ok', 'stderr': '',
+                                'sandboxed': False, 'duration_ms': 1})()
+        with patch.object(c, 'run_command', return_value=result) as run:
+            self.assertEqual(c.cmd_agent(self.pal, daemon, llm, 'audit', False, 5, True), 0)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[1].args[0], 'curl https://example.com/robots.txt')
 
     def test_executor_output_timeout_and_shell_rejection(self):
         with tempfile.TemporaryDirectory() as directory:

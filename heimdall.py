@@ -1131,6 +1131,8 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
               timeout=DEFAULT_TIMEOUT, rate_limiter=None, session_log=None,
               project_memory=None, auto_approve=False):
     history = []
+    seen_successful_commands = set()
+    duplicate_command_rejections = 0
     project_context = project_memory.load_context() if project_memory else ""
     step = 0
     if session_log:
@@ -1191,6 +1193,26 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
         if session_log:
             session_log.write(kind="plan", command=cmd,
                               reasoning=plan.get("reasoning", ""))
+        if cmd in seen_successful_commands:
+            duplicate_command_rejections += 1
+            message = ("duplicate command rejected; choose a different command that gathers new evidence. "
+                       "Do not repeat successful commands.")
+            print(f"  {pal.warn('!')}  {message}")
+            if session_log:
+                session_log.write(kind="duplicate_command", command=cmd, steps=step)
+            history.append({
+                "command": cmd,
+                "exit": 5,
+                "stdout_tail": "",
+                "stderr_tail": message,
+                "purpose": "duplicate command guard",
+            })
+            if duplicate_command_rejections >= 3:
+                print(pal.warn("  repeated duplicate proposals; stopping"))
+                if session_log:
+                    session_log.write(kind="session_end", status="duplicate_commands", steps=step)
+                return 5
+            continue
         if rate_limiter and not rate_limiter.acquire():
             print(f"  {pal.deny('✘')}  client rate limit exceeded")
             if session_log:
@@ -1283,6 +1305,9 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
             "purpose": plan.get("reasoning", ""),
         }
         history.append(hist)
+        if rc == 0:
+            seen_successful_commands.add(cmd)
+            duplicate_command_rejections = 0
         if session_log:
             session_log.write(kind="exec", command=cmd, rc=rc,
                               duration_ms=None,
