@@ -48,10 +48,12 @@ class LabTests(unittest.TestCase):
             base = Path(directory)
             policy = copy.deepcopy(self.policy)
             policy['command_map']['labtool'] = 'destructive_study.malware.static_analysis'
+            policy['lab_mode']['enabled'] = False
             daemon = h.Daemon(policy, b'x' * 32, {'history': base / 'history', 'mode_file': base / 'mode', 'var': base / 'var'}, True)
             denied = daemon.dispatch({'op': 'verdict', 'cmd': 'labtool'}, None)
             self.assertEqual(denied['verdict'], 'DENY')
             self.assertEqual(denied['reason'], 'lab_mode disabled')
+            daemon.lab.shutdown()
 
             policy['lab_mode']['enabled'] = True
             daemon = h.Daemon(policy, b'x' * 32, {'history': base / 'history2', 'mode_file': base / 'mode2', 'var': base / 'var2'}, True)
