@@ -205,6 +205,14 @@ class ClientTests(unittest.TestCase):
     def test_dashboard_helpers_and_installer_support(self):
         self.assertIsInstance(dash_mod._meminfo(), dict)
         self.assertGreaterEqual(dash_mod._disk('/')['pct'], 0)
+        self.assertEqual(dash_mod._bar(50, 10), '█████░░░░░')
+        theme = dash_mod.Theme()
+        theme.ok = 1
+        theme.warn = 2
+        theme.danger = 3
+        self.assertEqual(dash_mod._risk_attr(theme, 30), 1)
+        self.assertEqual(dash_mod._risk_attr(theme, 75), 2)
+        self.assertEqual(dash_mod._risk_attr(theme, 95), 3)
         script = (ROOT / 'heimdall-install.sh').read_text(encoding='utf-8')
         self.assertIn('dashboard.py', script)
 
