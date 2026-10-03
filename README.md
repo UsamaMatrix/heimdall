@@ -275,3 +275,14 @@ heimdall --llm-model heimdall-v1 "list all listening TCP sockets"
 ```
 
 See `docs/M5_ACCEPTANCE.md` for the release checklist and eval gates.
+
+
+### M6 memory and health checks
+
+```bash
+heimdall doctor
+heimdall --project ABC "continue the audit"
+heimdall --temp "inspect this once"
+```
+
+Project memory lives under `~/.heimdall/projects/<name>/memory.jsonl`. `--temp` disables session and project history for that run.

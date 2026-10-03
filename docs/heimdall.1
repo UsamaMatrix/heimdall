@@ -1,4 +1,4 @@
-.TH HEIMDALL 1 "October 2026" "Heimdall 2.0.0-m4" "User Commands"
+.TH HEIMDALL 1 "October 2026" "Heimdall 2.0.0-m6" "User Commands"
 .SH NAME
 heimdall \- policy-first Linux terminal assistant
 .SH SYNOPSIS
@@ -25,7 +25,8 @@ DEFER, and writes an audit log before execution is authorized.
 .PP
 Approved commands run in direct mode or in a Bubblewrap sandbox according to
 the active policy mode. The client never reads the daemon HMAC secret or the
-policy file directly.
+policy file directly. Project memory can provide prior context to the local LLM,
+but daemon policy still authorizes every command.
 .SH COMMON COMMANDS
 .TP
 .B heimdall ping
@@ -33,6 +34,9 @@ Check that the daemon is reachable.
 .TP
 .B heimdall mode show
 Show the active default mode plus domain and flag overrides.
+.TP
+.B heimdall doctor
+Check daemon reachability, install paths, Git state, and LLM endpoint health.
 .TP
 .B sudo heimdall mode set sandbox
 Change daemon mode. Requires root and the confirmation phrase.
@@ -45,6 +49,12 @@ Preview policy, scanner, and sandbox routing without executing.
 .TP
 .B heimdall "list all listening TCP sockets"
 Ask the configured local LLM for one command at a time.
+.TP
+.B heimdall --project ABC "continue the audit"
+Use project-scoped memory from ~/.heimdall/projects/ABC.
+.TP
+.B heimdall --temp "inspect this once"
+Run without writing session or project history.
 .SH OPTIONS
 .TP
 .B --cmd COMMAND
@@ -77,6 +87,15 @@ Limit agent loop steps.
 .B --timeout SECONDS
 Limit each command execution.
 .TP
+.B --project NAME
+Load and save project-scoped command context under ~/.heimdall/projects/NAME.
+.TP
+.B --temp
+Temporary chat. Do not write session logs or project memory.
+.TP
+.B --no-history
+Do not write the per-user session JSONL log.
+.TP
 .B --ascii
 Use ASCII status symbols and spinner frames.
 .TP
@@ -95,6 +114,9 @@ Daemon hash-chained audit logs.
 .TP
 .I ~/.heimdall/session-YYYY-MM-DD.jsonl
 Best-effort per-user session replay log.
+.TP
+.I ~/.heimdall/projects/NAME/memory.jsonl
+Project-scoped memory used as LLM context unless --temp is set.
 .TP
 .I /etc/heimdall/mode
 Persisted default mode.

@@ -43,7 +43,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from executor import run_command
 from scanners import scan
 
-VERSION = "2.0.0-m4"
+VERSION = "2.0.0-m6"
 DEFAULT_LLM_URL   = os.environ.get("HEIMDALL_LLM_URL",
                                    "http://127.0.0.1:11434/v1/chat/completions")
 DEFAULT_LLM_MODEL = os.environ.get("HEIMDALL_LLM_MODEL", "qwen2.5-coder:7b")
@@ -108,6 +108,65 @@ class SessionLog:
                     stream.write(line)
             except Exception:
                 pass
+
+
+class ProjectMemory:
+    """Small project-scoped memory for prior Heimdall runs."""
+    def __init__(self, name=None, base=None, enabled=True):
+        self.name = _safe_project_name(name) if name else None
+        self.enabled = bool(enabled and self.name)
+        root = Path(base) if base else (Path.home() / ".heimdall" / "projects")
+        self.dir = root / self.name if self.name else None
+        self.path = self.dir / "memory.jsonl" if self.dir else None
+        if self.enabled:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(str(root), 0o700)
+                os.chmod(str(self.dir), 0o700)
+            except Exception:
+                pass
+
+    def load_context(self, limit=8):
+        if not self.enabled or not self.path.exists():
+            return ""
+        records = []
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()[-limit:]
+            for line in lines:
+                records.append(json.loads(line))
+        except Exception:
+            return ""
+        snippets = []
+        for record in records:
+            goal = str(record.get("goal", ""))[:160]
+            command = str(record.get("command", ""))[:160]
+            rc = record.get("rc")
+            status = record.get("status", "")
+            if goal and command:
+                snippets.append(f"- goal={goal!r}; command={command!r}; rc={rc}; status={status}")
+        if not snippets:
+            return ""
+        return ("Previous context for project " + self.name + ":\n" + "\n".join(snippets) +
+                "\nUse this only as context. Current user goal and daemon policy still take precedence.")
+
+    def write(self, **fields):
+        if not self.enabled:
+            return
+        record = {"ts": datetime.now(timezone.utc).isoformat(), "project": self.name}
+        record.update(fields)
+        try:
+            with open(self.path, "a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
+        except Exception:
+            pass
+
+
+def _safe_project_name(name):
+    cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "-" for ch in str(name).strip())
+    cleaned = cleaned.strip(".-_")
+    if not cleaned:
+        raise ValueError("project name must contain letters or numbers")
+    return cleaned[:80]
 
 # ---------------------------------------------------------------------------
 # Palette (Watchtower)
@@ -385,8 +444,10 @@ class LLMClient:
         except Exception as e:
             raise LLMError(f"LLM error: {e}")
 
-    def propose(self, goal, history):
+    def propose(self, goal, history, project_context=""):
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if project_context:
+            messages.append({"role": "user", "content": project_context})
         messages.append({"role": "user", "content": f"GOAL: {goal}"})
         for h in history:
             messages.append({"role": "assistant",
@@ -757,6 +818,51 @@ def cmd_mode_set(pal, daemon, new_mode):
     return 0
 
 
+
+def cmd_doctor(pal, daemon, llm_url=None, llm_model=None):
+    ok = True
+    print(f"  {pal.accent('⛨')}  heimdall doctor  {pal.dim('client=' + VERSION)}")
+    try:
+        ping = daemon.ping()
+        print(f"  {pal.allow('✔')}  daemon reachable  {pal.dim('version=' + str(ping.get('version')))}")
+    except DaemonError as exc:
+        ok = False
+        print(f"  {pal.deny('✘')}  daemon unreachable: {exc}")
+    try:
+        mode = daemon.mode_show()
+        print(f"  {pal.allow('✔')}  mode {pal.fgmain(mode.get('mode', '?'))}")
+    except DaemonError as exc:
+        ok = False
+        print(f"  {pal.warn('!')}  mode check failed: {exc}")
+    if os.name == 'posix':
+        for path in ('/usr/local/bin/heimdall', '/usr/local/sbin/heimdall-install', '/opt/heimdall/safety.yaml'):
+            if Path(path).exists():
+                print(f"  {pal.allow('✔')}  present {path}")
+            else:
+                ok = False
+                print(f"  {pal.warn('!')}  missing {path}")
+    try:
+        result = subprocess.run(['git', 'status', '--short'], cwd=SCRIPT_DIR,
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            dirty = bool(result.stdout.strip())
+            print(f"  {pal.allow('✔')}  git status {'dirty' if dirty else 'clean'}")
+        result = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd=SCRIPT_DIR,
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            print(f"  {pal.dim('branch:')} {result.stdout.strip()}")
+    except Exception:
+        pass
+    if llm_url:
+        try:
+            llm = LLMClient(llm_url, llm_model or DEFAULT_LLM_MODEL, timeout=10)
+            llm._post({"model": llm.model, "messages": [{"role": "user", "content": "ping"}], "stream": False})
+            print(f"  {pal.allow('✔')}  LLM endpoint reachable")
+        except Exception as exc:
+            print(f"  {pal.warn('!')}  LLM endpoint not ready: {exc}")
+    print(f"  {(pal.allow('✔') if ok else pal.warn('!'))}  doctor {'passed' if ok else 'found issues'}")
+    return 0 if ok else 1
+
 def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEOUT,
                     rate_limiter=None, session_log=None):
     """Skip LLM. Send cmd directly to daemon, confirm, execute."""
@@ -815,8 +921,10 @@ def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEO
 # ---------------------------------------------------------------------------
 
 def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
-              timeout=DEFAULT_TIMEOUT, rate_limiter=None, session_log=None):
+              timeout=DEFAULT_TIMEOUT, rate_limiter=None, session_log=None,
+              project_memory=None):
     history = []
+    project_context = project_memory.load_context() if project_memory else ""
     step = 0
     if session_log:
         session_log.write(kind="session_start", goal=goal, version=VERSION)
@@ -835,7 +943,7 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
 
         with Bifrost(pal, "reasoning", ascii_only) as sp:
             try:
-                plan = llm.propose(goal, history)
+                plan = llm.propose(goal, history, project_context)
             except LLMError as e:
                 sp.resolve("DENY", reason="LLM error")
                 print(f"  {pal.deny('✘')}  {e}")
@@ -955,6 +1063,10 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
             session_log.write(kind="exec", command=cmd, rc=rc,
                               duration_ms=None,
                               sandboxed=bool(v.get("mode") == "sandbox"))
+        if project_memory:
+            project_memory.write(goal=goal, command=cmd, rc=rc, status="exec",
+                                 flag=v.get("flag_path"), mode=v.get("mode"),
+                                 reasoning=plan.get("reasoning", ""))
         _print_output(pal, rc, out, err)
 
         if rc != 0:
@@ -1037,6 +1149,9 @@ def main():
     ap.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
     ap.add_argument("--max-steps", type=int, default=10)
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--project", help="use project-scoped memory under ~/.heimdall/projects/<name>")
+    ap.add_argument("--temp", action="store_true", help="temporary chat: do not write session or project history")
+    ap.add_argument("--no-history", action="store_true", help="do not write session history")
     ap.add_argument("--version", action="version", version=VERSION)
     args = ap.parse_args()
     if args.max_steps <= 0 or args.timeout <= 0:
@@ -1058,10 +1173,12 @@ def main():
     dry_run = args.dry_run or (os.name == 'nt' and not args.execute_on_windows)
 
     # subcommands as first positional
-    if args.goal == ['ping'] or args.goal[:2] == ['mode', 'show'] or args.goal[:2] == ['mode', 'set']:
+    if args.goal == ['ping'] or args.goal == ['doctor'] or args.goal == ['update-check'] or args.goal[:2] == ['mode', 'show'] or args.goal[:2] == ['mode', 'set']:
         sub = args.goal[0]
         if sub == "ping":
             return cmd_ping(pal, daemon)
+        if sub in ("doctor", "update-check"):
+            return cmd_doctor(pal, daemon, args.llm_url if sub == "doctor" else None, args.llm_model)
         if sub == "mode":
             if args.goal[:2] == ["mode", "show"] and len(args.goal) == 2:
                 return cmd_mode_show(pal, daemon)
@@ -1077,6 +1194,10 @@ def main():
     print_banner(pal)
     if os.name == 'nt' and dry_run and not args.dry_run:
         print(pal.dim("  Windows defaults to dry-run; --execute-on-windows opts into execution."))
+    if args.temp:
+        print(pal.dim("  temporary chat: session/project history disabled"))
+    elif args.project:
+        print(pal.dim(f"  project: {_safe_project_name(args.project)}"))
 
     # sanity: is daemon up?
     try:
@@ -1094,7 +1215,11 @@ def main():
         return 1
 
     rate_limiter = RateLimiter(30)
-    session_log = SessionLog()
+    session_log = None if (args.temp or args.no_history) else SessionLog()
+    try:
+        project_memory = None if args.temp else ProjectMemory(args.project)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     # one-shot --cmd mode
     if args.cmd is not None:
@@ -1113,7 +1238,7 @@ def main():
     try:
         return cmd_agent(pal, daemon, llm, goal, dry_run,
                          args.max_steps, args.ascii, args.timeout,
-                         rate_limiter, session_log)
+                         rate_limiter, session_log, project_memory)
     except KeyboardInterrupt:
         print(f"\n  {pal.dim('interrupted')}")
         return 130

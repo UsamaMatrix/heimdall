@@ -206,6 +206,42 @@ class ClientTests(unittest.TestCase):
         self.assertIn('"$PREFIX/heimdald.service"', script)
         self.assertIn('install_if_different 0755 "$0" "$SBINDIR/heimdall-install"', script)
 
+    def test_project_memory_and_context_injection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = c.ProjectMemory('Project: ABC', base=directory)
+            self.assertEqual(memory.name, 'Project--ABC')
+            self.assertEqual(memory.load_context(), '')
+            memory.write(goal='list files', command='ls -la', rc=0, status='exec')
+            context = memory.load_context()
+            self.assertIn('Project--ABC', context)
+            self.assertIn('ls -la', context)
+
+        with patch.object(c.LLMClient, '_post') as post:
+            post.return_value = {'choices': [{'message': {'content': '{"action":"done","summary":"ok"}'}}]}
+            llm = c.LLMClient('http://127.0.0.1:1/v1/chat/completions', 'test')
+            self.assertEqual(llm.propose('new goal', [], 'project context')['action'], 'done')
+            messages = post.call_args.args[0]['messages']
+            self.assertEqual(messages[1]['content'], 'project context')
+            self.assertEqual(messages[2]['content'], 'GOAL: new goal')
+
+    def test_temp_disables_session_and_project_history(self):
+        daemon = Mock()
+        daemon.verdict.return_value = allowed()
+        with tempfile.TemporaryDirectory() as directory, patch.object(c, 'run_command') as run:
+            run.return_value = type('R', (), {'rc': 0, 'stdout': '', 'stderr': '',
+                                              'sandboxed': False, 'duration_ms': 1})()
+            memory = c.ProjectMemory('temp-test', base=directory, enabled=False)
+            self.assertEqual(c.cmd_one_command(self.pal, daemon, 'ls -la', False, True,
+                                               session_log=None), 0)
+            self.assertFalse(Path(directory, 'temp-test', 'memory.jsonl').exists())
+            self.assertFalse(memory.enabled)
+
+    def test_doctor_reports_daemon(self):
+        daemon = Mock()
+        daemon.ping.return_value = {'pong': True, 'version': 'test'}
+        daemon.mode_show.return_value = {'mode': 'hybrid'}
+        self.assertIn(c.cmd_doctor(self.pal, daemon), (0, 1))
+
 
 class LiveIntegrationTests(unittest.TestCase):
     def setUp(self):
