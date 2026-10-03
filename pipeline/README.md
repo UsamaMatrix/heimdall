@@ -14,7 +14,13 @@ python -m pipeline.build --dry-run
 python -c "import heimdall, pipeline.schema as s; assert heimdall.SYSTEM_PROMPT == s.SYSTEM_PROMPT"
 ```
 
-Full build:
+Bootstrap build without external datasets:
+
+```bash
+python -m pipeline.build --sources bootstrap
+```
+
+Full public-source build:
 
 ```bash
 python -m pipeline.build --sources nl2bash darkknight trendyol
@@ -23,11 +29,11 @@ python -m pipeline.build --sources nl2bash darkknight trendyol
 Unknown-license sources such as `blackhat` and `fenrir` are skipped unless
 `--allow-unknown-license` is passed.
 
-The label stage uses a live dev daemon at `127.0.0.1:47651` by default:
+The label stage uses the production Unix socket `/run/heimdall/bifrost.sock` by default. For a repo-local dev daemon, pass `--daemon-dev`:
 
 ```bash
 python heimdald.py --dev
-python -m pipeline.build --skip-fetch
+python -m pipeline.build --sources bootstrap --daemon-dev
 ```
 
 Generated data lives under `data/`, which is intentionally gitignored.

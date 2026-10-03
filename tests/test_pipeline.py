@@ -3,7 +3,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline import build, label, normalize
+from pipeline import bootstrap, build, label, normalize
 
 
 class PipelineEndpointTests(unittest.TestCase):
@@ -49,6 +49,13 @@ class PipelineEndpointTests(unittest.TestCase):
         })
         self.assertIsNotNone(row)
         self.assertEqual(row['command'], 'cat /etc/hostname')
+
+    def test_bootstrap_rows_normalize(self):
+        for goal, command in bootstrap.ROWS:
+            with self.subTest(command=command):
+                row = normalize._adapter('bootstrap', {'goal': goal, 'command': command})
+                self.assertIsNotNone(row)
+                self.assertEqual(row['command'], command)
 
 
 if __name__ == '__main__':

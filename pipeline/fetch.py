@@ -9,6 +9,7 @@ from pathlib import Path
 RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 SOURCES = {
+    "bootstrap": {"local": True, "license": "project-generated"},
     "nl2bash": {"hf": ("michaelin/nl2bash", None, "train"), "license": "MIT"},
     "darkknight": {"hf": ("darkknight25/Linux_Terminal_Commands_Dataset", None, "train"), "license": "MIT"},
     "blackhat": {"hf": ("TahaGorji/BlackHat-KaliLinux-CyberSecurity-dataset-Instruct", None, "train"), "license": "unknown"},
@@ -50,8 +51,14 @@ def main(argv=None):
     names = args.only or list(SOURCES)
     total = 0
     for name in names:
+        if name == "bootstrap":
+            from . import bootstrap
+            total += bootstrap.write_bootstrap()
+            continue
         if name not in SOURCES:
             print(f"[fetch] unknown source: {name}")
+            continue
+        if SOURCES[name].get("local"):
             continue
         total += fetch_one(name, SOURCES[name], args.allow_unknown_license)
     print(f"[fetch] total rows: {total}")

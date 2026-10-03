@@ -13,10 +13,10 @@ OUT = ROOT / "data" / "normalized"
 
 COMMAND_HEADS = {
     "apt", "awk", "cat", "cd", "chmod", "chown", "cp", "curl", "dig", "docker",
-    "echo", "find", "git", "grep", "head", "ip", "journalctl", "ls", "mkdir",
+    "cargo", "df", "echo", "find", "free", "git", "grep", "head", "ip", "journalctl", "ls", "mkdir",
     "mv", "netstat", "nmap", "ping", "pip", "python", "python3", "rm", "rsync",
     "sed", "ss", "sudo", "systemctl", "tail", "tar", "tcpdump", "tr", "ufw",
-    "uname", "whois", "wget", "which", "zip",
+    "uname", "useradd", "whois", "wget", "which", "zip",
 }
 FORBIDDEN_CHARS = set(";|&<>()`$\n\r")
 PROSE_MARKERS = (". ", "?", "!", " refers to ", " is a ", " are ", " the ", " attacker ")

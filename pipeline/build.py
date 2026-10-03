@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from . import dedupe, fetch, label, normalize, split
+from . import bootstrap, dedupe, fetch, label, normalize, split
 from .schema import SYSTEM_PROMPT, make_execute_row
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,8 +47,12 @@ def main(argv=None):
     if not args.skip_fetch:
         names = args.sources or list(fetch.SOURCES)
         for name in names:
-            if name in fetch.SOURCES:
+            if name == "bootstrap":
+                bootstrap.write_bootstrap()
+            elif name in fetch.SOURCES:
                 fetch.fetch_one(name, fetch.SOURCES[name], args.allow_unknown_license)
+            else:
+                print(f"[fetch] unknown source: {name}")
     normalize.normalize_sources(args.sources)
     if not args.skip_label:
         socket_path = label.DEV_SOCKET if args.daemon_dev else args.daemon_socket
