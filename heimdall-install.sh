@@ -130,7 +130,7 @@ setup_dirs() {
 copy_files() {
   local src
   src="$(source_dir)"
-  for file in heimdald.py heimdall.py executor.py scanners.py ui.py dashboard.py safety.yaml heimdald.service docs/heimdall.1 heimdall-update; do
+  for file in heimdald.py heimdall.py executor.py scanners.py ui.py dashboard.py lab.py safety.yaml heimdald.service docs/heimdall.1 heimdall-update; do
     [[ -f "$src/$file" ]] || die "missing $src/$file"
   done
   install_if_different 0755 "$src/heimdald.py" "$PREFIX/heimdald.py"
@@ -139,6 +139,7 @@ copy_files() {
   install_if_different 0755 "$src/scanners.py" "$PREFIX/scanners.py"
   install_if_different 0755 "$src/ui.py" "$PREFIX/ui.py"
   install_if_different 0755 "$src/dashboard.py" "$PREFIX/dashboard.py"
+  install_if_different 0755 "$src/lab.py" "$PREFIX/lab.py"
   install_if_different 0644 "$src/heimdald.service" "$PREFIX/heimdald.service"
   if [[ -f "$src/heimdall-install.sh" ]]; then
     install_if_different 0755 "$src/heimdall-install.sh" "$SBINDIR/heimdall-install"

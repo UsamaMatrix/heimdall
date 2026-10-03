@@ -1,4 +1,4 @@
-.TH HEIMDALL 1 "October 2026" "Heimdall 2.0.0-m6c" "User Commands"
+.TH HEIMDALL 1 "October 2026" "Heimdall 2.0.0-m7" "User Commands"
 .SH NAME
 heimdall \- policy-first Linux terminal assistant
 .SH SYNOPSIS
@@ -41,6 +41,21 @@ Check daemon reachability, install paths, Git state, and LLM endpoint health.
 .TP
 .B heimdall dashboard
 Open a read-only live terminal dashboard with daemon, system, and recent Heimdall activity panels.
+.TP
+.B heimdall lab status
+Show lab-mode state, evidence directory, and auto-off timer.
+.TP
+.B sudo heimdall lab on
+Enable lab mode after the destructive-study phrase and environment check pass.
+.TP
+.B sudo heimdall lab off
+Disable lab mode.
+.TP
+.B heimdall model show
+Show the selected default LLM model and its source.
+.TP
+.B heimdall model set MODEL
+Persist MODEL as the default LLM model under ~/.heimdall/model.json.
 .TP
 .B sudo heimdall-update
 Fast-forward the installed Git checkout, reinstall, and restart the daemon.
@@ -124,6 +139,12 @@ Production daemon socket.
 .I /var/lib/heimdall/history/
 Daemon hash-chained audit logs.
 .TP
+.I /var/lib/heimdall/evidence/
+Lab-mode evidence records for destructive-study invocations.
+.TP
+.I ~/.heimdall/model.json
+Per-user default LLM model preference.
+.TP
 .I ~/.heimdall/session-YYYY-MM-DD.jsonl
 Best-effort per-user session replay log.
 .TP
@@ -140,6 +161,8 @@ Install or reconfigure with:
 After installation, reconfigure with:
 .PP
 .B sudo heimdall-install --mode sandbox
+.SH LAB MODE
+Lab mode gates destructive_study.* commands. The daemon denies those commands unless lab mode is configured, active, and the current environment passes isolation checks. Activation requires root in production and the exact phrase I HAVE WRITTEN AUTHORIZATION. Evidence is written for authorized destructive-study executions, and the daemon auto-disables lab mode when its timer expires or an isolation check later fails.
 .SH EXIT STATUS
 .TP
 .B 0

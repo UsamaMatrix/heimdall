@@ -161,9 +161,18 @@ at `http://127.0.0.1:11434/v1/chat/completions` and `qwen2.5-coder:7b`.
 No SDK or API key is needed for that local endpoint.
 
 Use `--llm-url` / `--llm-model`, or `HEIMDALL_LLM_URL` /
-`HEIMDALL_LLM_MODEL`, for another compatible server. M4 does not add API-key
-authentication. The configured server receives your goal, executed commands,
-and the last 2,000 characters of each output stream.
+`HEIMDALL_LLM_MODEL`, for another compatible server. You can also persist the
+default model locally:
+
+```bash
+heimdall model show
+heimdall model list
+heimdall model set qwen2.5-coder:1.5b
+heimdall model clear
+```
+
+The configured server receives your goal, executed commands, and the last
+2,000 characters of each output stream.
 
 Plans must be JSON objects with action `execute`, `ask`, or `done`. Malformed
 plans stop the loop. Execution errors are fed back to the LLM. The step cap or
@@ -178,6 +187,9 @@ after each command finishes, rather than streamed live.
 heimdall ping
 heimdall mode show
 sudo heimdall mode set hybrid
+heimdall lab status
+heimdall lab verify
+heimdall model show
 heimdall banner
 heimdall --cmd "ls -la" --dry-run --ascii --no-color
 heimdall --socket /path/to/bifrost.sock --cmd "ls -la"
@@ -211,9 +223,11 @@ approval, not proof that a human was present. Before execution, the client sends
 token-bound `exec_start`; after execution it sends `exec_end` with return code,
 duration, output hashes, and whether `bwrap` was used.
 
-`ping`, `mode_show`, and root-only production `mode_set` remain supported.
-Use `sudo heimdall mode set sandbox|direct|hybrid`; the daemon checks the socket
-peer uid, so non-root clients are refused in production.
+`ping`, `mode_show`, root-only production `mode_set`, and root-only production
+`lab_enable`/`lab_disable` remain supported. Use
+`sudo heimdall mode set sandbox|direct|hybrid`; the daemon checks the socket
+peer uid, so non-root clients are refused in production for privileged state
+changes.
 Request mode overrides are rejected. Exit codes: 1 connection/LLM error,
 2 denial or invalid CLI input, 3 declined confirmation, 4 execution blocked,
 5 loop limit, 124 command timeout, 130 interrupted. One-shot mode otherwise
@@ -313,3 +327,28 @@ Heimdall renders its banner and verdict panels with terminal-width-aware boxes. 
 heimdall dashboard
 heimdall tui --refresh 0.5
 ```
+
+
+### M7 lab mode
+
+Lab mode is the runtime gate for `destructive_study.*`. When lab mode is off,
+destructive-study commands deny with `lab_mode disabled` or `lab mode not active`.
+When policy enables lab mode, activation still requires the exact phrase
+`I HAVE WRITTEN AUTHORIZATION`, root in production, and a passing isolation check:
+no default route, no non-loopback interface up, no host mounts under common
+external-storage paths, and a writable evidence directory. The daemon re-checks
+the environment on every destructive-study verdict and auto-disables lab mode if
+the environment becomes invalid.
+
+```bash
+heimdall lab status
+heimdall lab verify
+sudo heimdall lab on
+heimdall --cmd "python3 /tmp/malware_sample.py" --dry-run
+sudo heimdall lab off
+python3 tests/fuzz_socket.py
+```
+
+Evidence records are written under `/var/lib/heimdall/evidence/` in production
+and include the command hash, sample hashes when available, the lab environment
+snapshot, execution result, duration, sandbox flag, and output hashes.

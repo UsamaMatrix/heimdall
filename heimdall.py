@@ -45,10 +45,11 @@ from scanners import scan
 from ui import Box
 from dashboard import run_dashboard
 
-VERSION = "2.0.0-m6c"
+VERSION = "2.0.0-m7"
 DEFAULT_LLM_URL   = os.environ.get("HEIMDALL_LLM_URL",
                                    "http://127.0.0.1:11434/v1/chat/completions")
-DEFAULT_LLM_MODEL = os.environ.get("HEIMDALL_LLM_MODEL", "qwen2.5-coder:7b")
+BUILTIN_LLM_MODEL = "qwen2.5-coder:7b"
+DEFAULT_LLM_MODEL = os.environ.get("HEIMDALL_LLM_MODEL", BUILTIN_LLM_MODEL)
 MAX_OUTPUT_TAIL   = 2000      # chars of stdout/stderr fed back to LLM
 MAX_CAPTURE_BYTES = 1024 * 1024  # per stream, older output is discarded
 DEFAULT_TIMEOUT   = 180       # seconds per command
@@ -169,6 +170,57 @@ def _safe_project_name(name):
     if not cleaned:
         raise ValueError("project name must contain letters or numbers")
     return cleaned[:80]
+
+def _heimdall_home():
+    home = Path.home() / ".heimdall"
+    home.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(str(home), 0o700)
+    except Exception:
+        pass
+    return home
+
+
+class ModelConfig:
+    def __init__(self, path=None):
+        self.path = Path(path) if path else (_heimdall_home() / "model.json")
+
+    def get(self):
+        env_model = os.environ.get("HEIMDALL_LLM_MODEL")
+        if env_model:
+            return env_model, "env"
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            model = data.get("model")
+            if isinstance(model, str) and model.strip():
+                return model.strip(), "config"
+        except Exception:
+            pass
+        return BUILTIN_LLM_MODEL, "builtin"
+
+    def set(self, model):
+        model = str(model).strip()
+        if not model or any(ch.isspace() for ch in model):
+            raise ValueError("model name must be one non-empty token")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"model": model}, indent=2) + "\n", encoding="utf-8")
+        try:
+            os.chmod(str(self.path), 0o600)
+        except Exception:
+            pass
+        return model
+
+    def clear(self):
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def resolve_llm_model(cli_model=None):
+    if cli_model:
+        return cli_model, "cli"
+    return ModelConfig().get()
 
 # ---------------------------------------------------------------------------
 # Palette (Watchtower)
@@ -842,6 +894,128 @@ def cmd_mode_set(pal, daemon, new_mode):
 
 
 
+
+def _print_lab_snapshot(pal, snapshot, indent="    "):
+    for key, value in (snapshot.get("checks") or {}).items():
+        mark = pal.allow("✔") if value.get("ok") else pal.deny("✘")
+        detail = f"  {pal.dim(value.get('detail'))}" if value.get("detail") else ""
+        print(f"{indent}{mark}  {key}{detail}")
+
+
+def cmd_lab(pal, daemon, action):
+    if action == "status":
+        try:
+            response = daemon.request({"op": "lab_status"})
+        except DaemonError as exc:
+            print(f"  {pal.deny('✘')}  {exc}")
+            return 1
+        status = response.get("status", {})
+        box = Box(pal, title="lab mode")
+        print(box.top())
+        print(box.kv("configured", str(status.get("configured"))))
+        print(box.kv("enabled", pal.allow("yes") if status.get("enabled") else pal.dim("no")))
+        print(box.kv("evidence", str(status.get("evidence_dir", "?"))))
+        if status.get("enabled"):
+            print(box.kv("enabled_at", str(status.get("enabled_at"))))
+            print(box.kv("by_uid", str(status.get("enabled_by_uid"))))
+            secs = status.get("seconds_until_auto_off")
+            if secs is not None:
+                print(box.kv("auto_off_in", f"{secs}s"))
+            snapshot = status.get("env_snapshot") or {}
+            if snapshot:
+                print(box.rule())
+                for key, value in (snapshot.get("checks") or {}).items():
+                    mark = pal.allow("✔") if value.get("ok") else pal.deny("✘")
+                    detail = f"  {pal.dim(value.get('detail'))}" if value.get("detail") else ""
+                    print(box.row(f"{mark}  {key}{detail}"))
+        print(box.bottom())
+        return 0
+
+    if action == "verify":
+        try:
+            response = daemon.request({"op": "lab_verify"})
+        except DaemonError as exc:
+            print(f"  {pal.deny('✘')}  {exc}")
+            return 1
+        snapshot = response.get("snapshot", {})
+        ok = bool(snapshot.get("ok"))
+        print(f"  {(pal.allow('✔') if ok else pal.deny('✘'))}  env check {'passed' if ok else 'failed'}")
+        _print_lab_snapshot(pal, snapshot)
+        return 0 if ok else 2
+
+    if action == "on":
+        expected = "I HAVE WRITTEN AUTHORIZATION"
+        print(f"  Type exactly to enable lab mode: {pal.accent(expected)}")
+        try:
+            got = input("  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 3
+        if got != expected:
+            print(f"  {pal.deny('✘')}  phrase mismatch")
+            return 3
+        try:
+            response = daemon.request({"op": "lab_enable"})
+        except DaemonError as exc:
+            print(f"  {pal.deny('✘')}  {exc}")
+            return 1
+        if not response.get("ok"):
+            print(f"  {pal.deny('✘')}  {response.get('error')}")
+            _print_lab_snapshot(pal, response.get("snapshot") or {})
+            return 1
+        print(f"  {pal.allow('✔')}  lab mode enabled")
+        return 0
+
+    if action == "off":
+        try:
+            response = daemon.request({"op": "lab_disable"})
+        except DaemonError as exc:
+            print(f"  {pal.deny('✘')}  {exc}")
+            return 1
+        if not response.get("ok"):
+            print(f"  {pal.deny('✘')}  {response.get('error')}")
+            return 1
+        print(f"  {pal.allow('✔')}  lab mode disabled")
+        return 0
+
+    print("usage: heimdall lab on|off|status|verify")
+    return 2
+
+
+def cmd_model(pal, action, value=None):
+    cfg = ModelConfig()
+    if action == "show":
+        model, source = cfg.get()
+        print(f"  {pal.accent('⛨')}  model: {pal.fgmain(model)}  {pal.dim('source=' + source)}")
+        return 0
+    if action == "set":
+        if not value:
+            print("usage: heimdall model set <model-name>")
+            return 2
+        try:
+            model = cfg.set(value)
+        except ValueError as exc:
+            print(f"  {pal.deny('✘')}  {exc}")
+            return 2
+        print(f"  {pal.allow('✔')}  default model set to {pal.fgmain(model)}")
+        return 0
+    if action == "clear":
+        cfg.clear()
+        print(f"  {pal.allow('✔')}  model preference cleared")
+        return 0
+    if action == "list":
+        try:
+            result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0 and result.stdout.strip():
+                print(result.stdout.rstrip())
+                return 0
+        except Exception:
+            pass
+        print("  ollama list unavailable; try: ollama list")
+        return 1
+    print("usage: heimdall model show|set <name>|clear|list")
+    return 2
+
 def cmd_doctor(pal, daemon, llm_url=None, llm_model=None):
     ok = True
     print(f"  {pal.accent('⛨')}  heimdall doctor  {pal.dim('client=' + VERSION)}")
@@ -1208,7 +1382,7 @@ def main():
     endpoint.add_argument("--tcp", help="host:port for daemon TCP (dev mode)")
     endpoint.add_argument("--dev", action="store_true", help="use the local development daemon endpoint")
     ap.add_argument("--llm-url", default=DEFAULT_LLM_URL)
-    ap.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
+    ap.add_argument("--llm-model", default=None, help="override the saved/default LLM model for this run")
     ap.add_argument("--max-steps", type=int, default=10)
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     ap.add_argument("--refresh", type=float, default=1.0, help="dashboard refresh interval in seconds")
@@ -1226,6 +1400,13 @@ def main():
     if args.goal == ['banner']:
         print_banner(pal)
         return 0
+    if args.goal and args.goal[0] == "model":
+        action = args.goal[1] if len(args.goal) >= 2 else "show"
+        value = args.goal[2] if len(args.goal) >= 3 else None
+        if len(args.goal) > 3:
+            print("usage: heimdall model show|set <name>|clear|list")
+            return 2
+        return cmd_model(pal, action, value)
     if args.cmd is None and not args.goal:
         ap.print_help()
         return 2
@@ -1236,13 +1417,21 @@ def main():
     daemon = DaemonClient(**ep)
     dry_run = args.dry_run or (os.name == 'nt' and not args.execute_on_windows)
 
+    selected_model, model_source = resolve_llm_model(args.llm_model)
+
     # subcommands as first positional
+    if args.goal and args.goal[0] == "lab":
+        if len(args.goal) != 2:
+            print("usage: heimdall lab on|off|status|verify")
+            return 2
+        return cmd_lab(pal, daemon, args.goal[1])
+
     if args.goal == ['ping'] or args.goal == ['doctor'] or args.goal == ['update-check'] or args.goal == ['dashboard'] or args.goal == ['tui'] or args.goal[:2] == ['mode', 'show'] or args.goal[:2] == ['mode', 'set']:
         sub = args.goal[0]
         if sub == "ping":
             return cmd_ping(pal, daemon)
         if sub in ("doctor", "update-check"):
-            return cmd_doctor(pal, daemon, args.llm_url if sub == "doctor" else None, args.llm_model)
+            return cmd_doctor(pal, daemon, args.llm_url if sub == "doctor" else None, selected_model)
         if sub in ("dashboard", "tui"):
             return run_dashboard(daemon, max(0.2, args.refresh))
         if sub == "mode":
@@ -1334,7 +1523,7 @@ def main():
     # agent mode
     goal = " ".join(args.goal)
 
-    llm = LLMClient(args.llm_url, args.llm_model, timeout=args.timeout * 2)
+    llm = LLMClient(args.llm_url, selected_model, timeout=args.timeout * 2)
     try:
         return cmd_agent(pal, daemon, llm, goal, dry_run,
                          args.max_steps, args.ascii, args.timeout,

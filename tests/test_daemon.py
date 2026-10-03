@@ -90,9 +90,12 @@ class DaemonTests(unittest.TestCase):
             policy['lab_mode']['enabled'] = True
             policy['domains']['destructive_study']['enabled'] = True
             policy['domains']['destructive_study']['flags']['malware']['enabled'] = True
+            daemon = h.Daemon(policy, b'x' * 32,
+                              {'history': base / 'history2', 'mode_file': base / 'mode2', 'var': base / 'var2'}, True)
             ask = daemon.dispatch({'op': 'verdict', 'cmd': 'labtool'}, None)
-            self.assertEqual(ask['confirm_phrase'], 'I HAVE WRITTEN AUTHORIZATION')
-            self.assertIsNone(ask['token'])
+            self.assertEqual(ask['verdict'], 'DENY')
+            self.assertIn('lab mode not active', ask['reason'])
+            daemon.lab.shutdown()
 
     def test_m3_sandbox_scan_config_and_exec_audit_ops(self):
         with tempfile.TemporaryDirectory() as directory:
