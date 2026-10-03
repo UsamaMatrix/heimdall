@@ -29,6 +29,16 @@ warn() { printf "  %s!%s  %s\n" "$AMBER" "$RESET" "$*"; }
 die() { printf "  %sX%s  %s\n" "$RED" "$RESET" "$*" >&2; exit 1; }
 banner() { printf "\n  %sHEIMDALL%s  %s-  installer%s\n\n" "$AMBER" "$RESET" "$DIM" "$RESET"; }
 
+source_dir() {
+  if [[ -f "$REPO_DIR/heimdald.py" && -f "$REPO_DIR/safety.yaml" ]]; then
+    printf '%s\n' "$REPO_DIR"
+  elif [[ -f "$PREFIX/heimdald.py" && -f "$PREFIX/safety.yaml" ]]; then
+    printf '%s\n' "$PREFIX"
+  else
+    die "cannot find Heimdall source files in $REPO_DIR or $PREFIX"
+  fi
+}
+
 require_root() {
   [[ ${EUID} -eq 0 ]] || die "must run as root (use: sudo $0)"
 }
@@ -104,18 +114,25 @@ setup_dirs() {
 }
 
 copy_files() {
+  local src
+  src="$(source_dir)"
   for file in heimdald.py heimdall.py executor.py scanners.py safety.yaml heimdald.service; do
-    [[ -f "$REPO_DIR/$file" ]] || die "missing $REPO_DIR/$file"
+    [[ -f "$src/$file" ]] || die "missing $src/$file"
   done
-  install -o root -g root -m 0755 "$REPO_DIR/heimdald.py" "$PREFIX/heimdald.py"
-  install -o root -g root -m 0755 "$REPO_DIR/heimdall.py" "$PREFIX/heimdall.py"
-  install -o root -g root -m 0755 "$REPO_DIR/executor.py" "$PREFIX/executor.py"
-  install -o root -g root -m 0755 "$REPO_DIR/scanners.py" "$PREFIX/scanners.py"
-  install -o root -g root -m 0755 "$REPO_DIR/heimdall-install.sh" "$SBINDIR/heimdall-install"
+  install -o root -g root -m 0755 "$src/heimdald.py" "$PREFIX/heimdald.py"
+  install -o root -g root -m 0755 "$src/heimdall.py" "$PREFIX/heimdall.py"
+  install -o root -g root -m 0755 "$src/executor.py" "$PREFIX/executor.py"
+  install -o root -g root -m 0755 "$src/scanners.py" "$PREFIX/scanners.py"
+  install -o root -g root -m 0644 "$src/heimdald.service" "$PREFIX/heimdald.service"
+  if [[ -f "$src/heimdall-install.sh" ]]; then
+    install -o root -g root -m 0755 "$src/heimdall-install.sh" "$SBINDIR/heimdall-install"
+  else
+    install -o root -g root -m 0755 "$0" "$SBINDIR/heimdall-install"
+  fi
   ln -sf "$PREFIX/heimdall.py" "$BINDIR/heimdall"
   ok "programs installed; $BINDIR/heimdall linked"
 
-  install -o root -g root -m 0600 "$REPO_DIR/safety.yaml" "$PREFIX/safety.yaml"
+  install -o root -g root -m 0600 "$src/safety.yaml" "$PREFIX/safety.yaml"
   ok "policy installed at $PREFIX/safety.yaml (root:root 0600)"
 }
 
@@ -128,7 +145,9 @@ write_mode() {
 }
 
 install_unit() {
-  install -o root -g root -m 0644 "$REPO_DIR/heimdald.service" "$UNIT"
+  local src
+  src="$(source_dir)"
+  install -o root -g root -m 0644 "$src/heimdald.service" "$UNIT"
   systemctl daemon-reload
   ok "systemd unit installed: $UNIT"
 }

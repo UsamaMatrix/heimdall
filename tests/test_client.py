@@ -198,6 +198,13 @@ class ClientTests(unittest.TestCase):
         with patch('builtins.input', return_value='wrong'):
             self.assertEqual(c.cmd_mode_set(self.pal, daemon, 'hybrid'), 3)
 
+    def test_installer_supports_reconfigure_from_sbin(self):
+        script = (ROOT / 'heimdall-install.sh').read_text(encoding='utf-8')
+        self.assertIn('source_dir()', script)
+        self.assertIn('elif [[ -f "$PREFIX/heimdald.py"', script)
+        self.assertIn('"$PREFIX/heimdald.service"', script)
+        self.assertIn('install -o root -g root -m 0755 "$0" "$SBINDIR/heimdall-install"', script)
+
 
 class LiveIntegrationTests(unittest.TestCase):
     def setUp(self):
