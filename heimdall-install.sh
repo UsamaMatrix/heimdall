@@ -39,6 +39,18 @@ source_dir() {
   fi
 }
 
+install_if_different() {
+  local mode="$1"
+  local src="$2"
+  local dst="$3"
+  if [[ -e "$dst" && "$(readlink -f "$src")" == "$(readlink -f "$dst")" ]]; then
+    chmod "$mode" "$dst"
+    chown root:root "$dst"
+  else
+    install -o root -g root -m "$mode" "$src" "$dst"
+  fi
+}
+
 require_root() {
   [[ ${EUID} -eq 0 ]] || die "must run as root (use: sudo $0)"
 }
@@ -119,11 +131,11 @@ copy_files() {
   for file in heimdald.py heimdall.py executor.py scanners.py safety.yaml heimdald.service; do
     [[ -f "$src/$file" ]] || die "missing $src/$file"
   done
-  install -o root -g root -m 0755 "$src/heimdald.py" "$PREFIX/heimdald.py"
-  install -o root -g root -m 0755 "$src/heimdall.py" "$PREFIX/heimdall.py"
-  install -o root -g root -m 0755 "$src/executor.py" "$PREFIX/executor.py"
-  install -o root -g root -m 0755 "$src/scanners.py" "$PREFIX/scanners.py"
-  install -o root -g root -m 0644 "$src/heimdald.service" "$PREFIX/heimdald.service"
+  install_if_different 0755 "$src/heimdald.py" "$PREFIX/heimdald.py"
+  install_if_different 0755 "$src/heimdall.py" "$PREFIX/heimdall.py"
+  install_if_different 0755 "$src/executor.py" "$PREFIX/executor.py"
+  install_if_different 0755 "$src/scanners.py" "$PREFIX/scanners.py"
+  install_if_different 0644 "$src/heimdald.service" "$PREFIX/heimdald.service"
   if [[ -f "$src/heimdall-install.sh" ]]; then
     install -o root -g root -m 0755 "$src/heimdall-install.sh" "$SBINDIR/heimdall-install"
   else
@@ -132,7 +144,7 @@ copy_files() {
   ln -sf "$PREFIX/heimdall.py" "$BINDIR/heimdall"
   ok "programs installed; $BINDIR/heimdall linked"
 
-  install -o root -g root -m 0600 "$src/safety.yaml" "$PREFIX/safety.yaml"
+  install_if_different 0600 "$src/safety.yaml" "$PREFIX/safety.yaml"
   ok "policy installed at $PREFIX/safety.yaml (root:root 0600)"
 }
 
@@ -147,7 +159,7 @@ write_mode() {
 install_unit() {
   local src
   src="$(source_dir)"
-  install -o root -g root -m 0644 "$src/heimdald.service" "$UNIT"
+  install_if_different 0644 "$src/heimdald.service" "$UNIT"
   systemctl daemon-reload
   ok "systemd unit installed: $UNIT"
 }
