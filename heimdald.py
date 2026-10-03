@@ -47,7 +47,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "2.0.0-m6c"
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from lab import LabManager
+
+VERSION = "2.0.0-m7"
 
 BANNER = r"""
   H   H  EEEEE  III  M   M  DDDD    AAA   L      L
@@ -173,7 +179,7 @@ VERDICT_DENY  = "DENY"
 VERDICT_ASK   = "ASK"
 VERDICT_DEFER = "DEFER"
 
-def _walk_flag(policy: dict, flag_path: str):
+def _walk_flag(policy: dict, flag_path: str, ignore_enabled=False):
     """
     Walk a flag path like 'red_teaming.recon.passive_whois' through the
     nested domain tree. Returns (value, error_reason) where value is
@@ -184,7 +190,7 @@ def _walk_flag(policy: dict, flag_path: str):
     if parts[0] not in domains:
         return None, f"unknown domain '{parts[0]}'"
     node = domains[parts[0]]
-    if not node.get("enabled", False):
+    if not ignore_enabled and not node.get("enabled", False):
         return None, f"domain '{parts[0]}' disabled"
 
     i = 1
@@ -199,7 +205,7 @@ def _walk_flag(policy: dict, flag_path: str):
         sub = flags.get(key)
         if not isinstance(sub, dict) or "enabled" not in sub:
             return None, f"'{key}' is not a sub-domain"
-        if not sub.get("enabled", False):
+        if not ignore_enabled and not sub.get("enabled", False):
             return None, f"sub-domain '{key}' disabled"
         node = sub
         i += 1
@@ -250,6 +256,11 @@ def _resolve_flag_path(policy: dict, command: str):
         return None, "empty command"
     cmd = os.path.basename(argv[0])
     sub = argv[1] if len(argv) > 1 else None
+
+    for arg in argv[1:]:
+        base = os.path.basename(arg).lower()
+        if base.startswith("malware_sample") or base.startswith("malware-"):
+            return "destructive_study.malware.static_analysis", None
 
     submap = policy.get("command_map_subcommand", {}).get(cmd, {})
     if sub and sub in submap:
@@ -338,16 +349,9 @@ def resolve(policy: dict, command: str, default_mode: str) -> dict:
         result["latency_ms"] = round((time.perf_counter()-t0)*1000, 2)
         return result
 
-    # 3. lab_mode gate
-    if flag_path.startswith("destructive_study."):
-        if not policy.get("lab_mode", {}).get("enabled", False):
-            result["flag_path"] = flag_path
-            result["reason"] = "lab_mode disabled"
-            result["latency_ms"] = round((time.perf_counter()-t0)*1000, 2)
-            return result
-
-    # 4. flag value
-    value, err = _walk_flag(policy, flag_path)
+    # 3. flag value. destructive_study.* is intentionally declared disabled
+    # in safety.yaml and is activated only by the runtime lab guard.
+    value, err = _walk_flag(policy, flag_path, ignore_enabled=flag_path.startswith("destructive_study."))
     if value is None and err:
         result["flag_path"] = flag_path
         result["reason"] = err
@@ -498,6 +502,11 @@ class Daemon:
         self.dev = dev
         self.socket_group = socket_group
         self.history = History(paths["history"])
+        if dev:
+            self.policy = json.loads(json.dumps(self.policy))
+            self.policy.setdefault("lab_mode", {})["evidence_dir"] = str(paths.get("var", Path.cwd() / "dev-run" / "var") / "evidence")
+        self.lab = LabManager(self.policy, self.history, dev=dev)
+        self._exec_evidence = {}
         self.default_mode = self._read_mode_file()
         self.running = True
 
@@ -568,6 +577,14 @@ class Daemon:
             return self._op_config_get(req, uid)
         if op == "mode_set":
             return self._op_mode_set(req, uid)
+        if op == "lab_enable":
+            return self._op_lab_enable(req, uid)
+        if op == "lab_disable":
+            return self._op_lab_disable(req, uid)
+        if op == "lab_status":
+            return self._op_lab_status(req, uid)
+        if op == "lab_verify":
+            return self._op_lab_verify(req, uid)
         if op == "exec_start":
             return self._op_exec_start(req, uid)
         if op == "exec_end":
@@ -612,6 +629,14 @@ class Daemon:
             return {"verdict": VERDICT_DENY, "reason": "request_mode overrides are not supported"}
         cmd = req.get("cmd", "")
         result = resolve(self.policy, cmd, self.default_mode)
+        if (result.get("flag_path") or "").startswith("destructive_study."):
+            allowed, reason, snapshot = self.lab.guard(result.get("flag_path"))
+            if not allowed:
+                result.update(verdict=VERDICT_DENY, reason=reason, token=None)
+                if snapshot:
+                    result["lab_snapshot"] = snapshot
+            elif snapshot:
+                result["lab_snapshot"] = snapshot
         result["confirm_phrase"] = None
         result["confirmed"] = False
         if result["verdict"] == VERDICT_ASK:
@@ -642,6 +667,15 @@ class Daemon:
         # ASK is pending confirmation, not an authorization token.
         if result["verdict"] == VERDICT_ALLOW and result["mode"]:
             result["token"] = mint_token(self.secret, cmd, result["mode"])
+            if (result.get("flag_path") or "").startswith("destructive_study."):
+                try:
+                    evidence_id = self.lab.record_start(cmd, result.get("flag_path"),
+                                                        result.get("lab_snapshot"), uid)
+                    result["evidence_id"] = evidence_id
+                    self._exec_evidence[result["token"]] = evidence_id
+                except Exception as exc:
+                    result.update(verdict=VERDICT_DENY, token=None, confirmed=False,
+                                  reason=f"evidence write failed: {exc}")
         if result.get("mode") == "sandbox":
             result["sandbox_config"] = self._build_sandbox_config()
         if result.get("flag_path"):
@@ -701,6 +735,13 @@ class Daemon:
         mode = req.get("mode", "")
         if not verify_token(self.secret, token, cmd, mode):
             return {"ok": False, "error": "bad token"}
+        evidence_id = self._exec_evidence.pop(token, None)
+        if evidence_id:
+            self.lab.record_end(evidence_id, req.get("rc"),
+                                stdout_sha256=req.get("stdout_sha256"),
+                                stderr_sha256=req.get("stderr_sha256"),
+                                duration_ms=req.get("duration_ms"),
+                                sandboxed=bool(req.get("sandboxed", False)))
         try:
             self.history.write({
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -718,6 +759,29 @@ class Daemon:
         except Exception as exc:
             return {"ok": False, "error": f"history write failed: {exc}"}
         return {"ok": True}
+
+
+    def _require_root(self, uid):
+        return self.dev or uid == 0
+
+    def _op_lab_enable(self, req: dict, uid) -> dict:
+        if not self._require_root(uid):
+            return {"ok": False, "error": "peer not root"}
+        ok, err, snapshot = self.lab.enable(uid)
+        return {"ok": ok, "error": err, "snapshot": snapshot}
+
+    def _op_lab_disable(self, req: dict, uid) -> dict:
+        if not self._require_root(uid):
+            return {"ok": False, "error": "peer not root"}
+        ok, err = self.lab.disable(uid)
+        return {"ok": ok, "error": err}
+
+    def _op_lab_status(self, req: dict, uid) -> dict:
+        return {"ok": True, "status": self.lab.status()}
+
+    def _op_lab_verify(self, req: dict, uid) -> dict:
+        ok, snapshot = self.lab.verify(uid)
+        return {"ok": ok, "snapshot": snapshot}
 
     def _op_mode_show(self) -> dict:
         return {
