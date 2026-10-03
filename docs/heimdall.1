@@ -1,4 +1,4 @@
-.TH HEIMDALL 1 "October 2026" "Heimdall 2.0.0-m6" "User Commands"
+.TH HEIMDALL 1 "October 2026" "Heimdall 2.0.0-m6c" "User Commands"
 .SH NAME
 heimdall \- policy-first Linux terminal assistant
 .SH SYNOPSIS
@@ -37,6 +37,9 @@ Show the active default mode plus domain and flag overrides.
 .TP
 .B heimdall doctor
 Check daemon reachability, install paths, Git state, and LLM endpoint health.
+.TP
+.B sudo heimdall-update
+Fast-forward the installed Git checkout, reinstall, and restart the daemon.
 .TP
 .B sudo heimdall mode set sandbox
 Change daemon mode. Requires root and the confirmation phrase.
@@ -95,6 +98,11 @@ Temporary chat. Do not write session logs or project memory.
 .TP
 .B --no-history
 Do not write the per-user session JSONL log.
+.TP
+.B --auto-approve
+Accept ASK verdicts silently for this invocation. Requires policy opt-in via
+allow_auto_approve and may require the configured phrase. DENY is never
+overridden.
 .TP
 .B --ascii
 Use ASCII status symbols and spinner frames.

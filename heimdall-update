@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+REPO="${REPO:-/opt/heimdall}"
+AMBER=$'\033[38;2;224;164;88m'
+DIM=$'\033[38;2;107;111;115m'
+GREEN=$'\033[38;2;127;176;105m'
+RED=$'\033[38;2;200;85;61m'
+RESET=$'\033[0m'
+
+ok()   { printf "  %s✔%s  %s\n" "$GREEN" "$RESET" "$*"; }
+warn() { printf "  %s!%s  %s\n" "$AMBER" "$RESET" "$*"; }
+die()  { printf "  %s✘%s  %s\n" "$RED" "$RESET" "$*" >&2; exit 1; }
+
+[[ ${EUID} -eq 0 ]] || die "must run as root (sudo heimdall-update)"
+[[ -d "$REPO/.git" ]] || die "$REPO is not a git checkout"
+
+printf "\n  %s⛨  HEIMDALL%s  %s·  update%s\n\n" "$AMBER" "$RESET" "$DIM" "$RESET"
+
+cd "$REPO"
+MODE="$(cat /etc/heimdall/mode 2>/dev/null || echo hybrid)"
+old_rev="$(git rev-parse --short HEAD)"
+git fetch --quiet origin
+behind="$(git rev-list --count HEAD..@{u})"
+if [[ "$behind" == "0" ]]; then
+  ok "already up to date (${old_rev})"
+  exit 0
+fi
+
+warn "$behind commit(s) behind - pulling"
+git pull --ff-only
+new_rev="$(git rev-parse --short HEAD)"
+ok "updated ${old_rev} -> ${new_rev}"
+
+if [[ -x "$REPO/heimdall-install.sh" ]]; then
+  "$REPO/heimdall-install.sh" --mode "$MODE"
+  ok "reinstalled with mode=$MODE"
+fi
+
+if systemctl is-active --quiet heimdald; then
+  systemctl restart heimdald
+  sleep 1
+  if systemctl is-active --quiet heimdald; then
+    ok "heimdald restarted"
+  else
+    die "heimdald failed to restart - check: journalctl -u heimdald -n 50"
+  fi
+fi
+
+echo
+ok "update complete"
+echo

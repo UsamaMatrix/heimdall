@@ -43,7 +43,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from executor import run_command
 from scanners import scan
 
-VERSION = "2.0.0-m6"
+VERSION = "2.0.0-m6c"
 DEFAULT_LLM_URL   = os.environ.get("HEIMDALL_LLM_URL",
                                    "http://127.0.0.1:11434/v1/chat/completions")
 DEFAULT_LLM_MODEL = os.environ.get("HEIMDALL_LLM_MODEL", "qwen2.5-coder:7b")
@@ -380,6 +380,12 @@ class DaemonClient:
             raise DaemonError("invalid mode overrides")
         return response
 
+    def config_get(self, keys):
+        response = self.request({"op": "config_get", "keys": list(keys)})
+        if response.get("ok") is not True or not isinstance(response.get("values"), dict):
+            raise DaemonError(response.get("error") or "invalid config response")
+        return response["values"]
+
 # ---------------------------------------------------------------------------
 # LLM client (OpenAI-compatible /chat/completions)
 # ---------------------------------------------------------------------------
@@ -445,6 +451,19 @@ class LLMClient:
             raise LLMError(f"LLM error: {e}")
 
     def propose(self, goal, history, project_context=""):
+        messages = self._messages(goal, history, project_context)
+        return self._complete_plan(messages)
+
+    def repair_propose(self, goal, history, project_context="", error=""):
+        repair = ("Your previous response was not valid JSON matching Heimdall's schema. "
+                  "Return ONLY the JSON object, no prose, no markdown fences.")
+        if error:
+            repair += f" Parser error: {error}"
+        context = (project_context + "\n\n" + repair).strip() if project_context else repair
+        messages = self._messages(goal, history, context)
+        return self._complete_plan(messages)
+
+    def _messages(self, goal, history, project_context=""):
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if project_context:
             messages.append({"role": "user", "content": project_context})
@@ -458,7 +477,9 @@ class LLMClient:
                    f"stdout:\n{h.get('stdout_tail','')}\n"
                    f"stderr:\n{h.get('stderr_tail','')}")
             messages.append({"role": "user", "content": obs})
+        return messages
 
+    def _complete_plan(self, messages):
         payload = {
             "model": self.model,
             "messages": messages,
@@ -864,7 +885,7 @@ def cmd_doctor(pal, daemon, llm_url=None, llm_model=None):
     return 0 if ok else 1
 
 def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEOUT,
-                    rate_limiter=None, session_log=None):
+                    rate_limiter=None, session_log=None, auto_approve=False):
     """Skip LLM. Send cmd directly to daemon, confirm, execute."""
     if rate_limiter and not rate_limiter.acquire():
         print(f"  {pal.deny('✘')}  client rate limit exceeded")
@@ -889,15 +910,25 @@ def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEO
             session_log.write(kind="one_command_end", status="denied", rc=2)
         return 2
     if v.get("verdict") == "ASK":
-        phrase = confirm(pal, v)
-        if phrase is None:
-            return 3
-        try:
-            v = daemon.verdict(cmd, confirm=True, phrase=phrase)
-        except DaemonError as e:
-            print(f"  {pal.deny('✘')}  {e}")
-            return 1
-        _render_verdict(pal, v, brief=True)
+        if auto_approve:
+            if session_log:
+                session_log.write(kind="auto_approve", command=cmd, flag=v.get("flag_path"), mode=v.get("mode"))
+            try:
+                v = daemon.request({"op": "verdict", "cmd": cmd, "confirm": True, "auto": True})
+            except DaemonError as e:
+                print(f"  {pal.deny('✘')}  {e}")
+                return 1
+            _render_verdict(pal, v, brief=True)
+        else:
+            phrase = confirm(pal, v)
+            if phrase is None:
+                return 3
+            try:
+                v = daemon.verdict(cmd, confirm=True, phrase=phrase)
+            except DaemonError as e:
+                print(f"  {pal.deny('✘')}  {e}")
+                return 1
+            _render_verdict(pal, v, brief=True)
     error = authorization_error(v, cmd, dry_run)
     if error:
         print(f"  {pal.deny('✘')}  {error}")
@@ -922,7 +953,7 @@ def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEO
 
 def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
               timeout=DEFAULT_TIMEOUT, rate_limiter=None, session_log=None,
-              project_memory=None):
+              project_memory=None, auto_approve=False):
     history = []
     project_context = project_memory.load_context() if project_memory else ""
     step = 0
@@ -944,13 +975,17 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
         with Bifrost(pal, "reasoning", ascii_only) as sp:
             try:
                 plan = llm.propose(goal, history, project_context)
-            except LLMError as e:
-                sp.resolve("DENY", reason="LLM error")
-                print(f"  {pal.deny('✘')}  {e}")
-                if session_log:
-                    session_log.write(kind="session_end", status="error", steps=step,
-                                      error=str(e))
-                return 1
+            except LLMError as first_error:
+                try:
+                    plan = llm.repair_propose(goal, history, project_context, str(first_error))
+                    print(f"  {pal.warn('!')}  repaired malformed LLM response")
+                except LLMError as e:
+                    sp.resolve("DENY", reason="LLM error")
+                    print(f"  {pal.deny('✘')}  {e}")
+                    if session_log:
+                        session_log.write(kind="session_end", status="error", steps=step,
+                                          error=str(e))
+                    return 1
 
         action = plan.get("action", "")
         if action == "ask":
@@ -1006,15 +1041,28 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
             return 2
 
         if v["verdict"] == "ASK":
-            phrase = confirm(pal, v)
-            if phrase is None:
-                return 3
-            try:
-                v = daemon.verdict(cmd, confirm=True, phrase=phrase)
-            except DaemonError as e:
-                print(f"  {pal.deny('✘')}  {e}")
-                return 1
-            _render_verdict(pal, v, brief=True)
+            if auto_approve:
+                if session_log:
+                    session_log.write(kind="auto_approve", command=cmd, flag=v.get("flag_path"), mode=v.get("mode"))
+                try:
+                    v = daemon.request({"op": "verdict", "cmd": cmd, "confirm": True, "auto": True})
+                except DaemonError as e:
+                    print(f"  {pal.deny('✘')}  {e}")
+                    return 1
+                if not v.get("token"):
+                    print(f"  {pal.deny('✘')}  no execution token issued")
+                    return 4
+                _render_verdict(pal, v, brief=True)
+            else:
+                phrase = confirm(pal, v)
+                if phrase is None:
+                    return 3
+                try:
+                    v = daemon.verdict(cmd, confirm=True, phrase=phrase)
+                except DaemonError as e:
+                    print(f"  {pal.deny('✘')}  {e}")
+                    return 1
+                _render_verdict(pal, v, brief=True)
         error = authorization_error(v, cmd, dry_run)
         if error:
             print(f"  {pal.deny('✘')}  {error}")
@@ -1152,6 +1200,7 @@ def main():
     ap.add_argument("--project", help="use project-scoped memory under ~/.heimdall/projects/<name>")
     ap.add_argument("--temp", action="store_true", help="temporary chat: do not write session or project history")
     ap.add_argument("--no-history", action="store_true", help="do not write session history")
+    ap.add_argument("--auto-approve", action="store_true", help="accept ASK verdicts silently when policy allows it")
     ap.add_argument("--version", action="version", version=VERSION)
     args = ap.parse_args()
     if args.max_steps <= 0 or args.timeout <= 0:
@@ -1214,6 +1263,40 @@ def main():
             print(f"  {pal.dim('  check:')}    systemctl status heimdald")
         return 1
 
+    cfg = {}
+    try:
+        cfg = daemon.config_get([
+            "allow_auto_approve", "auto_approve_requires_phrase", "auto_approve_phrase",
+            "allow_update_check", "history_rag_max_sessions", "history_rag_max_days",
+            "history_rag_top_k", "history_rag_min_score",
+        ])
+    except DaemonError:
+        pass
+
+    auto_approve = False
+    if args.auto_approve:
+        if not cfg.get("allow_auto_approve"):
+            print(f"  {pal.warn('!')}  --auto-approve ignored: policy does not allow it")
+        else:
+            phrase = cfg.get("auto_approve_phrase", "")
+            if cfg.get("auto_approve_requires_phrase", True) and phrase:
+                print(f"  {pal.warn('⚠')}  AUTO-APPROVE requested")
+                print(f"  Type exactly to enable for this session: {pal.accent(phrase)}")
+                try:
+                    got = input("  > ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return 3
+                if got != phrase:
+                    print(f"  {pal.deny('✘')}  phrase mismatch — auto-approve disabled")
+                else:
+                    auto_approve = True
+            else:
+                auto_approve = True
+    if auto_approve:
+        print(f"  {pal.warn('⚠')}  AUTO-APPROVE ACTIVE — ASK verdicts accepted silently")
+        print(f"  {pal.dim('   DENY is never overridden. Every approval is logged.')}")
+
     rate_limiter = RateLimiter(30)
     session_log = None if (args.temp or args.no_history) else SessionLog()
     try:
@@ -1226,7 +1309,7 @@ def main():
         try:
             return cmd_one_command(
                 pal, daemon, args.cmd, dry_run, args.ascii, args.timeout,
-                rate_limiter, session_log)
+                rate_limiter, session_log, auto_approve)
         except KeyboardInterrupt:
             print(pal.dim("\n  interrupted"))
             return 130
@@ -1238,7 +1321,7 @@ def main():
     try:
         return cmd_agent(pal, daemon, llm, goal, dry_run,
                          args.max_steps, args.ascii, args.timeout,
-                         rate_limiter, session_log, project_memory)
+                         rate_limiter, session_log, project_memory, auto_approve)
     except KeyboardInterrupt:
         print(f"\n  {pal.dim('interrupted')}")
         return 130

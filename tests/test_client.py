@@ -242,6 +242,31 @@ class ClientTests(unittest.TestCase):
         daemon.mode_show.return_value = {'mode': 'hybrid'}
         self.assertIn(c.cmd_doctor(self.pal, daemon), (0, 1))
 
+    def test_auto_approve_one_command_uses_daemon_auto_confirm(self):
+        daemon = Mock()
+        ask = {'verdict': 'ASK', 'mode': 'direct', 'confirm_phrase': 'EXACT',
+               'flag_path': 'test.warn', 'token': None}
+        daemon.verdict.return_value = ask
+        daemon.request.return_value = allowed('nmap 127.0.0.1')
+        with patch.object(c, 'run_command') as run:
+            run.return_value = type('R', (), {'rc': 0, 'stdout': '', 'stderr': '',
+                                              'sandboxed': False, 'duration_ms': 1})()
+            self.assertEqual(c.cmd_one_command(self.pal, daemon, 'nmap 127.0.0.1',
+                                               True, True, auto_approve=True), 0)
+        daemon.request.assert_any_call({'op': 'verdict', 'cmd': 'nmap 127.0.0.1',
+                                        'confirm': True, 'auto': True})
+
+    def test_llm_json_repair_retry(self):
+        daemon = Mock()
+        daemon.mode_show.return_value = {'mode': 'hybrid'}
+        daemon.verdict.return_value = allowed()
+        daemon.request.return_value = {'ok': True}
+        llm = Mock()
+        llm.propose.side_effect = c.LLMError('bad json')
+        llm.repair_propose.return_value = {'action': 'done', 'summary': 'fixed'}
+        self.assertEqual(c.cmd_agent(self.pal, daemon, llm, 'list files', False, 2, True), 0)
+        llm.repair_propose.assert_called_once()
+
 
 class LiveIntegrationTests(unittest.TestCase):
     def setUp(self):

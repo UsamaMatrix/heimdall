@@ -286,3 +286,15 @@ heimdall --temp "inspect this once"
 ```
 
 Project memory lives under `~/.heimdall/projects/<name>/memory.jsonl`. `--temp` disables session and project history for that run.
+
+
+### M6c auto-approve and updates
+
+`--auto-approve` accepts ASK verdicts silently only when the daemon policy opts in with `defaults.allow_auto_approve: true`. It never overrides DENY or global deny rules. If `auto_approve_requires_phrase` is true, the client asks for the configured phrase once per invocation.
+
+```bash
+heimdall --auto-approve --cmd "systemctl status sshd" --dry-run
+sudo heimdall-update
+```
+
+`heimdall-update` fast-forwards the installed Git checkout, reruns the installer with the current mode, and restarts `heimdald`.

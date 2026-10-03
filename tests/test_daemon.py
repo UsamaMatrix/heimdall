@@ -157,6 +157,33 @@ class DaemonTests(unittest.TestCase):
                 chown.assert_called_once_with(socket_path, -1, 123)
                 chmod.assert_called_once_with(str(socket_path), 0o660)
 
+    def test_config_get_allowlist_and_auto_approve_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            policy = copy.deepcopy(self.policy)
+            daemon = h.Daemon(policy, b'x' * 32,
+                              {'history': base / 'history', 'mode_file': base / 'mode'}, True)
+            cfg = daemon.dispatch({'op': 'config_get', 'keys': ['allow_auto_approve', 'command_map']}, None)
+            self.assertTrue(cfg['ok'])
+            self.assertIn('allow_auto_approve', cfg['values'])
+            self.assertNotIn('command_map', cfg['values'])
+
+            denied = daemon.dispatch({'op': 'verdict', 'cmd': 'nmap 127.0.0.1',
+                                      'confirm': True, 'auto': True}, None)
+            self.assertEqual(denied['verdict'], 'ASK')
+            self.assertIsNone(denied.get('token'))
+            self.assertIn('disabled', denied.get('reason', ''))
+
+            policy['defaults']['allow_auto_approve'] = True
+            daemon = h.Daemon(policy, b'x' * 32,
+                              {'history': base / 'history2', 'mode_file': base / 'mode2'}, True)
+            approved = daemon.dispatch({'op': 'verdict', 'cmd': 'nmap 127.0.0.1',
+                                        'confirm': True, 'auto': True}, None)
+            self.assertEqual(approved['verdict'], 'ALLOW')
+            self.assertTrue(approved['confirmed'])
+            self.assertTrue(approved['auto_approved'])
+            self.assertTrue(h.verify_token(daemon.secret, approved['token'], 'nmap 127.0.0.1', 'direct'))
+
 
 if __name__ == '__main__':
     unittest.main()

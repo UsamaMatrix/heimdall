@@ -47,7 +47,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "2.0.0-m4"
+VERSION = "2.0.0-m6c"
 
 BANNER = r"""
   H   H  EEEEE  III  M   M  DDDD    AAA   L      L
@@ -208,6 +208,12 @@ def _walk_flag(policy: dict, flag_path: str):
 def _flag_enabled(policy: dict, flag_path: str) -> bool:
     v, err = _walk_flag(policy, flag_path)
     return v is True and err is None
+
+CONFIG_ALLOWLIST = {
+    "allow_auto_approve", "auto_approve_requires_phrase", "auto_approve_phrase",
+    "allow_update_check", "history_rag_max_sessions", "history_rag_max_days",
+    "history_rag_top_k", "history_rag_min_score",
+}
 
 SCANNER_SPECS = {
     "code_generation.python.execute": {
@@ -558,6 +564,8 @@ class Daemon:
             return self._op_verdict(req, uid)
         if op == "mode_show":
             return self._op_mode_show()
+        if op == "config_get":
+            return self._op_config_get(req, uid)
         if op == "mode_set":
             return self._op_mode_set(req, uid)
         if op == "exec_start":
@@ -591,6 +599,14 @@ class Daemon:
             "block_on_fail": _flag_enabled(self.policy, spec["block_flag"]),
         }
 
+    def _op_config_get(self, req: dict, uid) -> dict:
+        keys = req.get("keys") or []
+        if not isinstance(keys, list) or not keys:
+            return {"ok": False, "error": "no keys requested"}
+        defaults = self.policy.get("defaults", {})
+        values = {key: defaults[key] for key in keys if key in CONFIG_ALLOWLIST and key in defaults}
+        return {"ok": True, "values": values}
+
     def _op_verdict(self, req: dict, uid) -> dict:
         if req.get("request_mode") is not None:
             return {"verdict": VERDICT_DENY, "reason": "request_mode overrides are not supported"}
@@ -609,8 +625,16 @@ class Daemon:
                     "warn_confirmation_phrase", defaults.get(
                         "mode_switch_confirmation_phrase", "I UNDERSTAND THE RISK"))
             if req.get("confirm") is True:
+                defaults = self.policy.get("defaults", {})
+                auto_requested = bool(req.get("auto"))
                 expected = result["confirm_phrase"]
-                if expected is None or req.get("phrase") == expected:
+                if auto_requested and defaults.get("allow_auto_approve") is True:
+                    result["verdict"] = VERDICT_ALLOW
+                    result["confirmed"] = True
+                    result["auto_approved"] = True
+                elif auto_requested:
+                    result["reason"] = "auto-approve is disabled by policy"
+                elif expected is None or req.get("phrase") == expected:
                     result["verdict"] = VERDICT_ALLOW
                     result["confirmed"] = True
                 else:
@@ -642,6 +666,7 @@ class Daemon:
                 "message_key": result.get("message_key"),
                 "reason": result.get("reason"),
                 "confirmed": result["confirmed"],
+                "auto_approved": bool(result.get("auto_approved", False)),
                 "policy_id": self.policy.get("policy_id"),
             })
         except Exception as e:

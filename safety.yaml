@@ -37,6 +37,7 @@ runtime_mode:
     rate_limit_per_minute: 30
     panic_hotkey: "Ctrl-]"
     abort_if_daemon_unreachable: true
+    auto_approve_logs_extra: true
     cgroup_limits:
       memory_max: "4G"
       cpu_quota: "200%"
@@ -75,6 +76,14 @@ defaults:
   log_all_decisions: true
   max_agent_iterations: 10
   no_progress_repeat_limit: 2
+  allow_auto_approve: false
+  auto_approve_requires_phrase: true
+  auto_approve_phrase: "I ACCEPT AUTO-APPROVE FOR THIS SESSION"
+  allow_update_check: true
+  history_rag_max_sessions: 500
+  history_rag_max_days: 30
+  history_rag_top_k: 3
+  history_rag_min_score: 0.15
 
 # ---------------------------------------------------------------------
 # LAB MODE — gate for destructive_study.*

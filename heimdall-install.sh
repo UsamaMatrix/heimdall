@@ -130,7 +130,7 @@ setup_dirs() {
 copy_files() {
   local src
   src="$(source_dir)"
-  for file in heimdald.py heimdall.py executor.py scanners.py safety.yaml heimdald.service docs/heimdall.1; do
+  for file in heimdald.py heimdall.py executor.py scanners.py safety.yaml heimdald.service docs/heimdall.1 heimdall-update; do
     [[ -f "$src/$file" ]] || die "missing $src/$file"
   done
   install_if_different 0755 "$src/heimdald.py" "$PREFIX/heimdald.py"
@@ -143,6 +143,7 @@ copy_files() {
   else
     install_if_different 0755 "$0" "$SBINDIR/heimdall-install"
   fi
+  install_if_different 0755 "$src/heimdall-update" "$SBINDIR/heimdall-update"
   install_if_different 0644 "$src/docs/heimdall.1" "$MANDIR/heimdall.1"
   ln -sf "$PREFIX/heimdall.py" "$BINDIR/heimdall"
   ok "programs installed; $BINDIR/heimdall linked"
@@ -206,7 +207,7 @@ uninstall() {
   systemctl disable heimdald.service 2>/dev/null || true
   rm -f "$UNIT"
   systemctl daemon-reload
-  rm -f "$BINDIR/heimdall" "$SBINDIR/heimdall-install"
+  rm -f "$BINDIR/heimdall" "$SBINDIR/heimdall-install" "$SBINDIR/heimdall-update"
   warn "left $PREFIX and $STATEDIR in place - remove manually if you want a clean slate"
   ok "uninstalled"
 }
