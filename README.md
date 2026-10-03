@@ -298,3 +298,8 @@ sudo heimdall-update
 ```
 
 `heimdall-update` fast-forwards the installed Git checkout, reruns the installer with the current mode, and restarts `heimdald`.
+
+
+### M6d responsive terminal UI
+
+Heimdall renders its banner and verdict panels with terminal-width-aware boxes. Resize the terminal between commands and the next panel follows the new width. `--ascii` keeps the same layout with plain `+`, `-`, and `|` borders for older terminals.

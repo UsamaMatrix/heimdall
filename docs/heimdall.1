@@ -26,7 +26,8 @@ DEFER, and writes an audit log before execution is authorized.
 Approved commands run in direct mode or in a Bubblewrap sandbox according to
 the active policy mode. The client never reads the daemon HMAC secret or the
 policy file directly. Project memory can provide prior context to the local LLM,
-but daemon policy still authorizes every command.
+but daemon policy still authorizes every command. The client uses
+terminal-width-aware bordered panels for its banner and verdict displays.
 .SH COMMON COMMANDS
 .TP
 .B heimdall ping

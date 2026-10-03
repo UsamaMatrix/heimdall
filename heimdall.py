@@ -42,6 +42,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from executor import run_command
 from scanners import scan
+from ui import Box
 
 VERSION = "2.0.0-m6c"
 DEFAULT_LLM_URL   = os.environ.get("HEIMDALL_LLM_URL",
@@ -1137,11 +1138,20 @@ def _render_verdict(pal, v, brief=False):
     if brief:
         print(f"  {pal.dim('flag=')}{flag}  {pal.dim('mode=')}{mode}  "
               f"{pal.dim('verdict=')}{pal.verdict(verdict)}")
-    else:
-        print(f"  {pal.dim('flag:')}    {flag}")
-        print(f"  {pal.dim('mode:')}    {mode}")
-        print(f"  {pal.dim('verdict:')} {pal.verdict(verdict)}"
-              + (f"  {pal.dim('(' + v.get('reason','') + ')')}" if v.get('reason') else ""))
+        return
+    box = Box(pal, title="verdict")
+    print(box.top())
+    print(box.kv("flag", flag))
+    print(box.kv("mode", mode))
+    verdict_text = pal.verdict(verdict)
+    if v.get("reason"):
+        verdict_text += f"  {pal.dim('(' + v.get('reason', '') + ')')}"
+    print(box.kv("verdict", verdict_text))
+    if v.get("message"):
+        print(box.rule())
+        for line in str(v.get("message", "")).splitlines():
+            print(box.row(pal.fgmain(line)))
+    print(box.bottom())
 
 def _print_output(pal, rc, out, err):
     if out:
@@ -1160,9 +1170,12 @@ def _print_output(pal, rc, out, err):
 # ---------------------------------------------------------------------------
 
 def print_banner(pal):
+    box = Box(pal, title="⛨ HEIMDALL · WATCHTOWER")
     print()
-    print(pal.accent("   HEIMDALL / THE WATCHTOWER"))
-    print(pal.dim(f"   client {VERSION}"))
+    print(box.top())
+    print(box.row(f"{pal.accent('client')}  {VERSION}", align="center"))
+    print(box.row(f"{pal.dim('policy')}  watchtower-v2", align="center"))
+    print(box.bottom())
     print()
 
 # ---------------------------------------------------------------------------

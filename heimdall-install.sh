@@ -130,13 +130,14 @@ setup_dirs() {
 copy_files() {
   local src
   src="$(source_dir)"
-  for file in heimdald.py heimdall.py executor.py scanners.py safety.yaml heimdald.service docs/heimdall.1 heimdall-update; do
+  for file in heimdald.py heimdall.py executor.py scanners.py ui.py safety.yaml heimdald.service docs/heimdall.1 heimdall-update; do
     [[ -f "$src/$file" ]] || die "missing $src/$file"
   done
   install_if_different 0755 "$src/heimdald.py" "$PREFIX/heimdald.py"
   install_if_different 0755 "$src/heimdall.py" "$PREFIX/heimdall.py"
   install_if_different 0755 "$src/executor.py" "$PREFIX/executor.py"
   install_if_different 0755 "$src/scanners.py" "$PREFIX/scanners.py"
+  install_if_different 0755 "$src/ui.py" "$PREFIX/ui.py"
   install_if_different 0644 "$src/heimdald.service" "$PREFIX/heimdald.service"
   if [[ -f "$src/heimdall-install.sh" ]]; then
     install_if_different 0755 "$src/heimdall-install.sh" "$SBINDIR/heimdall-install"
@@ -181,10 +182,23 @@ enable_start() {
 }
 
 verify() {
-  if [[ -S /run/heimdall/bifrost.sock ]]; then
+  local socket_ok=0
+  for _ in {1..20}; do
+    if [[ -S /run/heimdall/bifrost.sock ]]; then
+      socket_ok=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ "$socket_ok" == "1" ]]; then
     ok "socket present: /run/heimdall/bifrost.sock"
   else
-    die "socket missing after start"
+    warn "socket not visible yet; trying client ping before failing"
+    if command -v heimdall >/dev/null 2>&1 && heimdall ping 2>/dev/null | grep -q "daemon alive"; then
+      ok "daemon reachable even though socket check raced"
+    else
+      die "socket missing after start"
+    fi
   fi
   if python3 "$PREFIX/heimdald.py" --selftest >/dev/null 2>&1; then
     ok "daemon selftest passed"

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import heimdall as c
 import heimdald as d
 import executor as e
+import ui as ui_mod
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -198,6 +199,16 @@ class ClientTests(unittest.TestCase):
         with patch('builtins.input', return_value='wrong'):
             self.assertEqual(c.cmd_mode_set(self.pal, daemon, 'hybrid'), 3)
 
+
+    def test_responsive_box_width_and_truncation(self):
+        pal = c.Palette(enabled=False, ascii_only=True)
+        box = ui_mod.Box(pal, title='test', width=50)
+        top = box.top()
+        row = box.row('x' * 100)
+        self.assertEqual(ui_mod.visible_len(top), 50)
+        self.assertEqual(ui_mod.visible_len(row), 50)
+        self.assertIn('...', row)
+
     def test_installer_supports_reconfigure_from_sbin(self):
         script = (ROOT / 'heimdall-install.sh').read_text(encoding='utf-8')
         self.assertIn('source_dir()', script)
@@ -205,6 +216,8 @@ class ClientTests(unittest.TestCase):
         self.assertIn('elif [[ -f "$PREFIX/heimdald.py"', script)
         self.assertIn('"$PREFIX/heimdald.service"', script)
         self.assertIn('install_if_different 0755 "$0" "$SBINDIR/heimdall-install"', script)
+        self.assertIn('ui.py', script)
+        self.assertIn('socket_ok', script)
 
     def test_project_memory_and_context_injection(self):
         with tempfile.TemporaryDirectory() as directory:
