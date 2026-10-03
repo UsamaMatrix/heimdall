@@ -204,7 +204,7 @@ class ClientTests(unittest.TestCase):
         self.assertIn('install_if_different()', script)
         self.assertIn('elif [[ -f "$PREFIX/heimdald.py"', script)
         self.assertIn('"$PREFIX/heimdald.service"', script)
-        self.assertIn('install -o root -g root -m 0755 "$0" "$SBINDIR/heimdall-install"', script)
+        self.assertIn('install_if_different 0755 "$0" "$SBINDIR/heimdall-install"', script)
 
 
 class LiveIntegrationTests(unittest.TestCase):

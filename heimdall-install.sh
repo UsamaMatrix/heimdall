@@ -137,9 +137,9 @@ copy_files() {
   install_if_different 0755 "$src/scanners.py" "$PREFIX/scanners.py"
   install_if_different 0644 "$src/heimdald.service" "$PREFIX/heimdald.service"
   if [[ -f "$src/heimdall-install.sh" ]]; then
-    install -o root -g root -m 0755 "$src/heimdall-install.sh" "$SBINDIR/heimdall-install"
+    install_if_different 0755 "$src/heimdall-install.sh" "$SBINDIR/heimdall-install"
   else
-    install -o root -g root -m 0755 "$0" "$SBINDIR/heimdall-install"
+    install_if_different 0755 "$0" "$SBINDIR/heimdall-install"
   fi
   ln -sf "$PREFIX/heimdall.py" "$BINDIR/heimdall"
   ok "programs installed; $BINDIR/heimdall linked"
