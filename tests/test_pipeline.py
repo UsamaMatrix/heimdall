@@ -57,6 +57,26 @@ class PipelineEndpointTests(unittest.TestCase):
                 self.assertIsNotNone(row)
                 self.assertEqual(row['command'], command)
 
+    def test_bootstrap_teaches_web_audit_progression(self):
+        audit_rows = [(goal, command) for goal, command in bootstrap.ROWS
+                      if 'Authorized web audit for https://example.com' in goal]
+        commands = [command for _, command in audit_rows]
+        self.assertGreaterEqual(len(commands), 8)
+        self.assertEqual(len(commands), len(set(commands)))
+        self.assertEqual(commands[0], 'curl -I https://example.com/')
+        self.assertIn('curl https://example.com/robots.txt', commands)
+        self.assertIn('curl https://example.com/sitemap.xml', commands)
+        self.assertIn('curl -I https://example.com/wp-json/', commands)
+        self.assertIn('whois example.com', commands)
+        self.assertIn('dig example.com', commands)
+        self.assertIn('curl -I https://example.com/.env', commands)
+
+    def test_system_prompt_rejects_web_audit_repetition(self):
+        import heimdall
+        self.assertIn('Never repeat a command that already succeeded', heimdall.SYSTEM_PROMPT)
+        self.assertIn('WEB AUDIT FLOW', heimdall.SYSTEM_PROMPT)
+        self.assertIn('choose the next distinct evidence', heimdall.SYSTEM_PROMPT)
+
 
 if __name__ == '__main__':
     unittest.main()
