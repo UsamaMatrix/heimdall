@@ -1,0 +1,34 @@
+base_model: Qwen/Qwen2.5-Coder-7B-Instruct
+load_in_4bit: true
+bnb_compute_dtype: bfloat16
+
+lora:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  bias: none
+
+training:
+  epochs: 3
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-4
+  scheduler: cosine
+  warmup_ratio: 0.03
+  max_seq_length: 4096
+  bf16: true
+  gradient_checkpointing: true
+  logging_steps: 20
+  save_steps: 400
+  eval_steps: 400
+  save_total_limit: 3
+
+data:
+  train: data/final/train.jsonl
+  val: data/final/val.jsonl
+  chat_template: qwen
+
+output:
+  dir: out/heimdall-lora-v1
+  hub_push: false
