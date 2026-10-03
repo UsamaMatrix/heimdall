@@ -899,6 +899,9 @@ def cmd_selftest(policy: dict):
         ("rm -rf /home/user/file", VERDICT_ASK),          # file_delete=warn
         ("nmap 10.0.0.1", VERDICT_ASK),                   # port_scan_tcp=warn
         ("whois example.com", VERDICT_ALLOW),             # passive_whois=true
+        ("curl -I https://example.com", VERDICT_ALLOW),   # http_head=true
+        ("curl https://example.com", VERDICT_ALLOW),      # http_fetch=true
+        ("wget https://example.com", VERDICT_ALLOW),      # http_fetch=true
         ("systemctl restart sshd", VERDICT_ASK),          # service_control=warn
         ("useradd bob", VERDICT_DENY),                    # user_management=false
         ("python3 script.py", VERDICT_ASK),               # execute=warn

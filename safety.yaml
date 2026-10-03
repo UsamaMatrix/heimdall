@@ -360,6 +360,8 @@ domains:
       web_api:
         enabled: true
         flags:
+          http_head: true
+          http_fetch: true
           burp: { action: warn, message_key: offensive_active }
           zap: { action: warn, message_key: offensive_active }
           sqlmap: { action: warn, message_key: offensive_active }
@@ -713,6 +715,8 @@ command_map:
   iptables: networking.firewall_edit
 
   # --- red: recon ---
+  curl: red_teaming.web_api.http_fetch
+  wget: red_teaming.web_api.http_fetch
   whois: red_teaming.recon.passive_whois
   dig: red_teaming.recon.passive_dns
   nslookup: red_teaming.recon.passive_dns
@@ -834,6 +838,10 @@ command_map:
 # SUBCOMMAND MAP  (argv[0] + argv[1] → flag path, precedence over command_map)
 # ---------------------------------------------------------------------
 command_map_subcommand:
+
+  curl:
+    -I: red_teaming.web_api.http_head
+    --head: red_teaming.web_api.http_head
 
   apt:
     install: linux_administration.package_install
