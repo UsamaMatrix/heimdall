@@ -36,6 +36,20 @@ class PipelineEndpointTests(unittest.TestCase):
             'assistant': 'Phishing is a social engineering technique.',
         }))
 
+    def test_command_extraction_rejects_absolute_path_prose(self):
+        self.assertIsNone(normalize._adapter('trendyol', {
+            'user': 'Explain environ poisoning.',
+            'assistant': '/proc/self/environ poisoning refers to an LFI technique.',
+        }))
+
+    def test_command_extraction_allows_command_with_path_argument(self):
+        row = normalize._adapter('trendyol', {
+            'user': 'Show the hostname file.',
+            'assistant': '```bash\ncat /etc/hostname\n```',
+        })
+        self.assertIsNotNone(row)
+        self.assertEqual(row['command'], 'cat /etc/hostname')
+
 
 if __name__ == '__main__':
     unittest.main()
