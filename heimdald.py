@@ -47,7 +47,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "2.0.0-m3"
+VERSION = "2.0.0-m4"
 
 BANNER = r"""
   H   H  EEEEE  III  M   M  DDDD    AAA   L      L

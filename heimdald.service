@@ -1,0 +1,34 @@
+[Unit]
+Description=Heimdall policy daemon
+Documentation=https://github.com/UsamaMatrix/heimdall
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=heimdall
+RuntimeDirectory=heimdall
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/python3 /opt/heimdall/heimdald.py --socket-group heimdall
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/heimdall
+ReadWritePaths=/var/lib/heimdall /run/heimdall /etc/heimdall
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
