@@ -18,6 +18,7 @@ import heimdall as c
 import heimdald as d
 import executor as e
 import ui as ui_mod
+import dashboard as dash_mod
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -199,6 +200,13 @@ class ClientTests(unittest.TestCase):
         with patch('builtins.input', return_value='wrong'):
             self.assertEqual(c.cmd_mode_set(self.pal, daemon, 'hybrid'), 3)
 
+
+
+    def test_dashboard_helpers_and_installer_support(self):
+        self.assertIsInstance(dash_mod._meminfo(), dict)
+        self.assertGreaterEqual(dash_mod._disk('/')['pct'], 0)
+        script = (ROOT / 'heimdall-install.sh').read_text(encoding='utf-8')
+        self.assertIn('dashboard.py', script)
 
     def test_responsive_box_width_and_truncation(self):
         pal = c.Palette(enabled=False, ascii_only=True)

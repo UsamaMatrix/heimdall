@@ -43,6 +43,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from executor import run_command
 from scanners import scan
 from ui import Box
+from dashboard import run_dashboard
 
 VERSION = "2.0.0-m6c"
 DEFAULT_LLM_URL   = os.environ.get("HEIMDALL_LLM_URL",
@@ -1210,6 +1211,7 @@ def main():
     ap.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
     ap.add_argument("--max-steps", type=int, default=10)
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--refresh", type=float, default=1.0, help="dashboard refresh interval in seconds")
     ap.add_argument("--project", help="use project-scoped memory under ~/.heimdall/projects/<name>")
     ap.add_argument("--temp", action="store_true", help="temporary chat: do not write session or project history")
     ap.add_argument("--no-history", action="store_true", help="do not write session history")
@@ -1235,12 +1237,14 @@ def main():
     dry_run = args.dry_run or (os.name == 'nt' and not args.execute_on_windows)
 
     # subcommands as first positional
-    if args.goal == ['ping'] or args.goal == ['doctor'] or args.goal == ['update-check'] or args.goal[:2] == ['mode', 'show'] or args.goal[:2] == ['mode', 'set']:
+    if args.goal == ['ping'] or args.goal == ['doctor'] or args.goal == ['update-check'] or args.goal == ['dashboard'] or args.goal == ['tui'] or args.goal[:2] == ['mode', 'show'] or args.goal[:2] == ['mode', 'set']:
         sub = args.goal[0]
         if sub == "ping":
             return cmd_ping(pal, daemon)
         if sub in ("doctor", "update-check"):
             return cmd_doctor(pal, daemon, args.llm_url if sub == "doctor" else None, args.llm_model)
+        if sub in ("dashboard", "tui"):
+            return run_dashboard(daemon, max(0.2, args.refresh))
         if sub == "mode":
             if args.goal[:2] == ["mode", "show"] and len(args.goal) == 2:
                 return cmd_mode_show(pal, daemon)

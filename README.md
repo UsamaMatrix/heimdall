@@ -303,3 +303,13 @@ sudo heimdall-update
 ### M6d responsive terminal UI
 
 Heimdall renders its banner and verdict panels with terminal-width-aware boxes. Resize the terminal between commands and the next panel follows the new width. `--ascii` keeps the same layout with plain `+`, `-`, and `|` borders for older terminals.
+
+
+### M6d dashboard
+
+`heimdall dashboard` opens a lightweight, read-only terminal dashboard inspired by btop. It shows daemon status, mode, system load, memory, disk usage, recent Heimdall activity, and top processes. Press `q` to quit.
+
+```bash
+heimdall dashboard
+heimdall tui --refresh 0.5
+```
