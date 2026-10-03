@@ -11,6 +11,15 @@ RAW = ROOT / "data" / "raw"
 OUT = ROOT / "data" / "normalized"
 
 
+COMMAND_HEADS = {
+    "apt", "awk", "cat", "cd", "chmod", "chown", "cp", "curl", "dig", "docker",
+    "echo", "find", "git", "grep", "head", "ip", "journalctl", "ls", "mkdir",
+    "mv", "netstat", "nmap", "ping", "pip", "python", "python3", "rm", "rsync",
+    "sed", "ss", "sudo", "systemctl", "tail", "tar", "tcpdump", "tr", "ufw",
+    "uname", "whois", "wget", "which", "zip",
+}
+
+
 def _first_text(row, keys):
     for key in keys:
         value = row.get(key)
@@ -19,15 +28,53 @@ def _first_text(row, keys):
     return ""
 
 
+def _strip_prompt(line):
+    line = line.strip()
+    for prompt in ("$ ", "# ", "> "):
+        if line.startswith(prompt):
+            return line[len(prompt):].strip()
+    return line
+
+
+def _looks_like_command(line):
+    line = _strip_prompt(line)
+    if not line or line.startswith(("//", "#", "<!--")):
+        return False
+    first = line.split()[0]
+    return first in COMMAND_HEADS or first.startswith(("./", "/"))
+
+
+def _command_from_text(text):
+    if not text:
+        return ""
+    if "```" in text:
+        chunks = text.split("```")
+        for chunk in chunks[1::2]:
+            lines = chunk.splitlines()
+            if lines and lines[0].strip().lower() in {"bash", "sh", "shell", "console", "terminal"}:
+                lines = lines[1:]
+            for line in lines:
+                candidate = _strip_prompt(line)
+                if _looks_like_command(candidate):
+                    return candidate
+    for line in text.splitlines():
+        candidate = _strip_prompt(line)
+        if _looks_like_command(candidate):
+            return candidate
+    return ""
+
+
 def _adapter(source, row):
-    goal = _first_text(row, ("goal", "question", "instruction", "prompt", "nl", "description", "input"))
-    command = _first_text(row, ("command", "bash", "cmd", "output", "answer", "response", "completion"))
+    goal = _first_text(row, ("goal", "question", "instruction", "prompt", "nl", "description", "input", "user"))
+    command = _first_text(row, ("command", "bash", "cmd"))
+    if not command:
+        command = _command_from_text(_first_text(row, ("assistant", "output", "answer", "response", "completion", "text", "content")))
     if not goal or not command:
         text = _first_text(row, ("text", "content"))
         if "```" in text:
             parts = text.split("```")
             goal = goal or parts[0].strip()
-            command = command or parts[1].strip().splitlines()[-1]
+            command = command or _command_from_text(text)
     if not goal or not command:
         return None
     ident = hashlib.sha256(f"{source}\0{goal}\0{command}".encode()).hexdigest()[:20]

@@ -3,7 +3,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline import build, label
+from pipeline import build, label, normalize
 
 
 class PipelineEndpointTests(unittest.TestCase):
@@ -18,6 +18,23 @@ class PipelineEndpointTests(unittest.TestCase):
     def test_default_label_endpoint_is_production_socket(self):
         self.assertEqual(label.DEFAULT_SOCKET, '/run/heimdall/bifrost.sock')
         self.assertTrue(label.DEV_SOCKET.replace('\\', '/').endswith('dev-run/run/bifrost.sock'))
+
+    def test_trendyol_user_assistant_command_extraction(self):
+        row = normalize._adapter('trendyol', {
+            'system': 'You are a cybersecurity assistant.',
+            'user': 'How do I list open TCP ports locally?',
+            'assistant': 'Run:\n```bash\nss -tulpn\n```',
+        })
+        self.assertIsNotNone(row)
+        self.assertEqual(row['goal'], 'How do I list open TCP ports locally?')
+        self.assertEqual(row['command'], 'ss -tulpn')
+        self.assertEqual(row['license'], 'Apache-2.0')
+
+    def test_command_extraction_rejects_plain_explanation(self):
+        self.assertIsNone(normalize._adapter('trendyol', {
+            'user': 'Explain phishing.',
+            'assistant': 'Phishing is a social engineering technique.',
+        }))
 
 
 if __name__ == '__main__':
