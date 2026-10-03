@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import html
 import hashlib
 import ipaddress
 import json
@@ -32,6 +33,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -843,6 +845,114 @@ def _execute_with_policy(pal, daemon, cmd, verdict, dry_run, timeout, ascii_only
 # Subcommands
 # ---------------------------------------------------------------------------
 
+
+
+def _audit_web_commands(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("audit web requires an http(s) URL")
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    host = parsed.hostname or parsed.netloc
+    checks = [
+        ("HTTP response headers", f"curl -I {base}/"),
+        ("robots.txt", f"curl {base}/robots.txt"),
+        ("sitemap.xml", f"curl {base}/sitemap.xml"),
+        ("WordPress REST API index", f"curl {base}/wp-json/"),
+        ("DNS records", f"dig {host}"),
+        ("WHOIS registration", f"whois {host}"),
+        ("Environment file exposure probe", f"curl -I {base}/.env"),
+        ("Git metadata exposure probe", f"curl -I {base}/.git/HEAD"),
+        ("Backup archive exposure probe", f"curl -I {base}/backup.zip"),
+    ]
+    return base, host, checks
+
+
+def _finding_summary(records):
+    findings = []
+    header_text = "\n".join(r.get("stdout", "") for r in records if r.get("name") == "HTTP response headers")
+    lower_headers = header_text.lower()
+    if "x-powered-by:" in lower_headers:
+        findings.append(("Low", "Technology disclosure", "The response exposes X-Powered-By, which can help fingerprint the stack."))
+    for header in ("strict-transport-security", "x-frame-options", "referrer-policy", "permissions-policy"):
+        if header not in lower_headers:
+            findings.append(("Medium" if header == "strict-transport-security" else "Low",
+                             "Missing security header", f"Header {header} was not observed on the main response."))
+    for rec in records:
+        if "exposure probe" in rec.get("name", "") and (" 200 " in rec.get("stdout", "") or rec.get("stdout", "").startswith("HTTP/2 200")):
+            findings.append(("High", rec.get("name"), "A sensitive-looking path returned HTTP 200. Review immediately."))
+    return findings
+
+
+def _write_web_report(path, url, records):
+    findings = _finding_summary(records)
+    rows = []
+    for severity, title, detail in findings:
+        rows.append(f"<tr><td>{html.escape(severity)}</td><td>{html.escape(title)}</td><td>{html.escape(detail)}</td></tr>")
+    if not rows:
+        rows.append("<tr><td>Info</td><td>No automatic high-confidence finding</td><td>Review raw evidence below.</td></tr>")
+    evidence = []
+    for rec in records:
+        evidence.append(
+            "<section>"
+            f"<h3>{html.escape(rec['name'])}</h3>"
+            f"<p><strong>Command:</strong> <code>{html.escape(rec['command'])}</code></p>"
+            f"<p><strong>Exit:</strong> {html.escape(str(rec['rc']))}</p>"
+            f"<pre>{html.escape((rec.get('stdout') or '')[:12000])}</pre>"
+            f"<pre>{html.escape((rec.get('stderr') or '')[:4000])}</pre>"
+            "</section>"
+        )
+    document = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Heimdall Web Audit Report</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:1100px;margin:2rem auto;line-height:1.45}}table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ccc;padding:.45rem;vertical-align:top}}pre{{background:#111;color:#eee;padding:1rem;overflow:auto}}code{{background:#eee;padding:.1rem .25rem}}</style>
+</head><body>
+<h1>Heimdall Web Audit Report</h1>
+<p><strong>Target:</strong> {html.escape(url)}</p>
+<p><strong>Generated:</strong> {html.escape(datetime.now(timezone.utc).isoformat())}</p>
+<h2>Summary Findings</h2><table><tr><th>Severity</th><th>Finding</th><th>Details</th></tr>{''.join(rows)}</table>
+<h2>Evidence</h2>{''.join(evidence)}
+<h2>Notes</h2><p>This report is generated from safe, policy-gated commands. It does not prove absence of vulnerabilities. Follow up manually for authenticated, form, and business-logic testing.</p>
+</body></html>"""
+    Path(path).write_text(document, encoding="utf-8")
+
+
+def cmd_audit_web(pal, daemon, url, out_path, timeout=DEFAULT_TIMEOUT, ascii_only=False, dry_run=False):
+    try:
+        _base, host, checks = _audit_web_commands(url)
+    except ValueError as exc:
+        print(f"  {pal.deny('✘')}  {exc}")
+        return 2
+    print(f"  {pal.accent('⛨')}  web audit: {pal.fgmain(url)}")
+    print(f"  {pal.dim('host:')} {host}  {pal.dim('checks:')} {len(checks)}")
+    records = []
+    for name, cmd in checks:
+        print()
+        print(f"  {pal.dim('check:')} {name}")
+        print(f"  {pal.dim('command:')} {pal.fgmain(cmd)}")
+        try:
+            verdict = daemon.verdict(cmd)
+        except DaemonError as exc:
+            print(f"  {pal.deny('✘')}  {exc}")
+            return 1
+        _render_verdict(pal, verdict, brief=True)
+        if verdict.get("verdict") != "ALLOW":
+            records.append({"name": name, "command": cmd, "rc": "blocked", "stdout": "", "stderr": verdict.get("reason", "")})
+            continue
+        error = authorization_error(verdict, cmd, dry_run)
+        if error:
+            print(f"  {pal.deny('✘')}  {error}")
+            return 4
+        rc, blocked, stdout, stderr = _execute_with_policy(pal, daemon, cmd, verdict, dry_run, timeout, ascii_only)
+        records.append({"name": name, "command": cmd, "rc": rc, "stdout": stdout, "stderr": stderr if not blocked else "blocked by scanner"})
+        if dry_run:
+            continue
+    if not dry_run:
+        _write_web_report(out_path, url, records)
+        print()
+        print(f"  {pal.allow('✔')}  wrote HTML report: {out_path}")
+    else:
+        print(f"  {pal.dim('dry-run — report not written')}")
+    return 0
+
 def cmd_ping(pal, daemon):
     try:
         r = daemon.ping()
@@ -1415,6 +1525,7 @@ def main():
     ap.add_argument("--temp", action="store_true", help="temporary chat: do not write session or project history")
     ap.add_argument("--no-history", action="store_true", help="do not write session history")
     ap.add_argument("--auto-approve", action="store_true", help="accept ASK verdicts silently when policy allows it")
+    ap.add_argument("--out", default="heimdall-web-audit.html", help="output path for audit web HTML report")
     ap.add_argument("--version", action="version", version=VERSION)
     args = ap.parse_args()
     if args.max_steps <= 0 or args.timeout <= 0:
@@ -1445,6 +1556,12 @@ def main():
     selected_model, model_source = resolve_llm_model(args.llm_model)
 
     # subcommands as first positional
+    if args.goal[:2] == ["audit", "web"]:
+        if len(args.goal) != 3:
+            print("usage: heimdall audit web https://example.com --out report.html")
+            return 2
+        return cmd_audit_web(pal, daemon, args.goal[2], args.out, args.timeout, args.ascii, dry_run)
+
     if args.goal and args.goal[0] == "lab":
         if len(args.goal) != 2:
             print("usage: heimdall lab on|off|status|verify")

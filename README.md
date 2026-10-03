@@ -352,3 +352,17 @@ python3 tests/fuzz_socket.py
 Evidence records are written under `/var/lib/heimdall/evidence/` in production
 and include the command hash, sample hashes when available, the lab environment
 snapshot, execution result, duration, sandbox flag, and output hashes.
+
+### Deterministic web audit report
+
+For a repeatable web audit that does not depend on the LLM choosing each next
+command, use the built-in web audit runner. Every command is still checked by
+the daemon before execution.
+
+```bash
+heimdall audit web https://metaskillsofficial.com/ --out metaskills-security-report.html
+```
+
+The runner performs safe same-origin checks such as headers, robots.txt,
+sitemap.xml, WordPress REST API, DNS, WHOIS, and a few exposed-file probes, then
+writes an HTML report. It does not brute force, dump data, or exploit findings.

@@ -145,6 +145,38 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
             self.assertEqual(run.call_args_list[1].args[0], 'curl https://example.com/robots.txt')
 
+
+    def test_web_audit_helpers_and_report(self):
+        _base, host, checks = c._audit_web_commands('https://example.com/path')
+        self.assertEqual(host, 'example.com')
+        commands = [command for _name, command in checks]
+        self.assertIn('curl -I https://example.com/', commands)
+        self.assertIn('curl https://example.com/robots.txt', commands)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'report.html'
+            c._write_web_report(path, 'https://example.com/', [{
+                'name': 'HTTP response headers',
+                'command': 'curl -I https://example.com/',
+                'rc': 0,
+                'stdout': 'HTTP/2 200\nx-powered-by: PHP\n',
+                'stderr': '',
+            }])
+            text = path.read_text(encoding='utf-8')
+            self.assertIn('Heimdall Web Audit Report', text)
+            self.assertIn('Technology disclosure', text)
+
+    def test_cmd_audit_web_runs_policy_gated_commands(self):
+        daemon = Mock()
+        daemon.verdict.side_effect = lambda command: allowed(command)
+        daemon.request.return_value = {'ok': True}
+        result = type('R', (), {'rc': 0, 'stdout': 'HTTP/2 200\n', 'stderr': '',
+                                'sandboxed': False, 'duration_ms': 1})()
+        with tempfile.TemporaryDirectory() as directory, patch.object(c, 'run_command', return_value=result) as run:
+            out = Path(directory) / 'audit.html'
+            self.assertEqual(c.cmd_audit_web(self.pal, daemon, 'https://example.com/', out, 5, True), 0)
+            self.assertTrue(out.exists())
+            self.assertGreaterEqual(run.call_count, 4)
+
     def test_executor_output_timeout_and_shell_rejection(self):
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / 'test.py'

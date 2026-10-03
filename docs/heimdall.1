@@ -42,6 +42,9 @@ Check daemon reachability, install paths, Git state, and LLM endpoint health.
 .B heimdall dashboard
 Open a read-only live terminal dashboard with daemon, system, and recent Heimdall activity panels.
 .TP
+.B heimdall audit web URL --out report.html
+Run a deterministic, policy-gated safe web audit and write an HTML report.
+.TP
 .B heimdall lab status
 Show lab-mode state, evidence directory, and auto-off timer.
 .TP
@@ -122,6 +125,9 @@ Do not write the per-user session JSONL log.
 Accept ASK verdicts silently for this invocation. Requires policy opt-in via
 allow_auto_approve and may require the configured phrase. DENY is never
 overridden.
+.TP
+.B --out PATH
+Output path for audit web HTML reports.
 .TP
 .B --ascii
 Use ASCII status symbols and spinner frames.
