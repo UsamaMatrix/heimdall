@@ -11,6 +11,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${PREFIX:-/opt/heimdall}"
 BINDIR="/usr/local/bin"
 SBINDIR="/usr/local/sbin"
+MANDIR="/usr/local/share/man/man1"
 SYSCONF="/etc/heimdall"
 STATEDIR="/var/lib/heimdall"
 UNIT="/etc/systemd/system/heimdald.service"
@@ -122,13 +123,14 @@ setup_dirs() {
   install -d -o root -g "$SVCGROUP" -m 0750 "$STATEDIR/evidence"
   install -d -o root -g root -m 0755 "$SYSCONF"
   install -d -o root -g root -m 0755 "$SBINDIR"
+  install -d -o root -g root -m 0755 "$MANDIR"
   ok "directories created under $PREFIX, $STATEDIR, $SYSCONF"
 }
 
 copy_files() {
   local src
   src="$(source_dir)"
-  for file in heimdald.py heimdall.py executor.py scanners.py safety.yaml heimdald.service; do
+  for file in heimdald.py heimdall.py executor.py scanners.py safety.yaml heimdald.service docs/heimdall.1; do
     [[ -f "$src/$file" ]] || die "missing $src/$file"
   done
   install_if_different 0755 "$src/heimdald.py" "$PREFIX/heimdald.py"
@@ -141,6 +143,7 @@ copy_files() {
   else
     install_if_different 0755 "$0" "$SBINDIR/heimdall-install"
   fi
+  install_if_different 0644 "$src/docs/heimdall.1" "$MANDIR/heimdall.1"
   ln -sf "$PREFIX/heimdall.py" "$BINDIR/heimdall"
   ok "programs installed; $BINDIR/heimdall linked"
 

@@ -1,0 +1,137 @@
+.TH HEIMDALL 1 "October 2026" "Heimdall 2.0.0-m4" "User Commands"
+.SH NAME
+heimdall \- policy-first Linux terminal assistant
+.SH SYNOPSIS
+.B heimdall
+.RI [ options ] " goal ..."
+.br
+.B heimdall
+.B --cmd
+.RI command
+.br
+.B heimdall
+.B ping
+.br
+.B heimdall
+.B mode show
+.br
+.B sudo heimdall
+.B mode set
+.BR sandbox | direct | hybrid
+.SH DESCRIPTION
+Heimdall proposes or runs one simple command at a time through a local policy
+daemon, heimdald. The daemon classifies commands, returns ALLOW, ASK, DENY, or
+DEFER, and writes an audit log before execution is authorized.
+.PP
+Approved commands run in direct mode or in a Bubblewrap sandbox according to
+the active policy mode. The client never reads the daemon HMAC secret or the
+policy file directly.
+.SH COMMON COMMANDS
+.TP
+.B heimdall ping
+Check that the daemon is reachable.
+.TP
+.B heimdall mode show
+Show the active default mode plus domain and flag overrides.
+.TP
+.B sudo heimdall mode set sandbox
+Change daemon mode. Requires root and the confirmation phrase.
+.TP
+.B heimdall --cmd "cat /etc/hostname"
+Classify and run one command through the daemon.
+.TP
+.B heimdall --cmd "python3 script.py" --dry-run
+Preview policy, scanner, and sandbox routing without executing.
+.TP
+.B heimdall "list all listening TCP sockets"
+Ask the configured local LLM for one command at a time.
+.SH OPTIONS
+.TP
+.B --cmd COMMAND
+Skip the LLM and submit COMMAND directly to the daemon.
+.TP
+.B --dry-run
+Show the verdict and intended execution mode without launching a command.
+.TP
+.B --execute-on-windows
+Opt into direct execution on Windows. Windows defaults to dry-run.
+.TP
+.B --socket PATH
+Use a specific Unix socket.
+.TP
+.B --tcp HOST:PORT
+Use a loopback TCP daemon endpoint for development.
+.TP
+.B --dev
+Use the development daemon endpoint.
+.TP
+.B --llm-url URL
+Use another OpenAI-compatible chat/completions endpoint.
+.TP
+.B --llm-model MODEL
+Use another model name, for example heimdall-v1.
+.TP
+.B --max-steps N
+Limit agent loop steps.
+.TP
+.B --timeout SECONDS
+Limit each command execution.
+.TP
+.B --ascii
+Use ASCII status symbols and spinner frames.
+.TP
+.B --no-color
+Disable color output.
+.SH FILES
+.TP
+.I /opt/heimdall/safety.yaml
+Root-owned policy file.
+.TP
+.I /run/heimdall/bifrost.sock
+Production daemon socket.
+.TP
+.I /var/lib/heimdall/history/
+Daemon hash-chained audit logs.
+.TP
+.I ~/.heimdall/session-YYYY-MM-DD.jsonl
+Best-effort per-user session replay log.
+.TP
+.I /etc/heimdall/mode
+Persisted default mode.
+.SH INSTALLATION
+Install or reconfigure with:
+.PP
+.B sudo ./heimdall-install.sh --mode hybrid
+.PP
+After installation, reconfigure with:
+.PP
+.B sudo heimdall-install --mode sandbox
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Connection, daemon, or LLM error.
+.TP
+.B 2
+Policy denial or invalid CLI input.
+.TP
+.B 3
+Confirmation declined or phrase mismatch.
+.TP
+.B 4
+Execution blocked by authorization checks.
+.TP
+.B 5
+Loop limit, scanner block, or client rate limit.
+.TP
+.B 124
+Command timeout.
+.TP
+.B 130
+Interrupted.
+.SH SEE ALSO
+.BR heimdald.service (5),
+.BR systemctl (1),
+.BR bubblewrap (1)

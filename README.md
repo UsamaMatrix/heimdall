@@ -243,3 +243,35 @@ loop. M3 automated tests cover sandbox and scanner metadata, token-bound
 execution audit ops, and the updated client execution path. M4 tests cover the
 rate limiter, session log, mode-set client path, and installer syntax. Kali
 systemd hardening should be checked with `systemd-analyze security heimdald.service`.
+
+## M5 Dataset And Fine-Tune
+
+M5 freezes the runtime interface and adds the model pipeline under `pipeline/`,
+`train/`, and `eval/`. It does not require changes to `heimdall.py` or
+`heimdald.py`.
+
+Local plumbing check:
+
+```bash
+python -m pipeline.build --dry-run
+python -c "import heimdall, pipeline.schema as s; assert heimdall.SYSTEM_PROMPT == s.SYSTEM_PROMPT"
+python eval/run_all.py --model nonexistent
+```
+
+Build data with a running dev daemon:
+
+```bash
+python heimdald.py --dev
+python -m pipeline.build --sources nl2bash darkknight trendyol
+```
+
+Train and install the model:
+
+```bash
+python train/train_qlora.py --config train/config.yaml
+bash train/convert_gguf.sh out/heimdall-lora-v1
+ollama create heimdall-v1 -f train/Modelfile
+heimdall --llm-model heimdall-v1 "list all listening TCP sockets"
+```
+
+See `docs/M5_ACCEPTANCE.md` for the release checklist and eval gates.
