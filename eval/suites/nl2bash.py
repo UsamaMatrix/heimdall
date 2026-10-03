@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from eval.llm_client import OLLAMA_NATIVE
 from eval.suites.common import propose
 
 CASES = [
@@ -19,10 +20,13 @@ CASES = [
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
+    parser.add_argument("--url", default=OLLAMA_NATIVE)
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args(argv)
     exact = total = unavailable = 0
     for case in CASES:
-        plan, err = propose(args.model, case["goal"])
+        plan, err = propose(args.model, case["goal"], url=args.url, timeout=args.timeout, verbose=args.verbose)
         if err:
             unavailable += 1
             continue

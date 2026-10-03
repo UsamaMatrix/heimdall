@@ -15,10 +15,10 @@ GATES = {
 }
 
 
-def run_suite(name, model):
+def run_suite(name, model, url, timeout, verbose=False):
     script = Path(__file__).parent / "suites" / f"{name}.py"
     result = subprocess.run(
-        [sys.executable, str(script), "--model", model],
+        [sys.executable, str(script), "--model", model, "--url", url, "--timeout", str(timeout)] + (["--verbose"] if verbose else []),
         capture_output=True,
         text=True,
     )
@@ -35,12 +35,15 @@ def run_suite(name, model):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="heimdall-v1")
+    parser.add_argument("--url", default="http://127.0.0.1:11434/api/chat")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args(argv)
     results = {}
     ok = True
     for name, gate in GATES.items():
         print(f"[eval] {name} ...")
-        res = run_suite(name, args.model)
+        res = run_suite(name, args.model, args.url, args.timeout, args.verbose)
         results[name] = res
         if not res:
             ok = False
