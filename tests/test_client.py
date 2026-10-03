@@ -170,6 +170,34 @@ class ClientTests(unittest.TestCase):
             path.side_effect = lambda value: value
             self.assertEqual(c.pick_endpoint(args)['socket_path'], '/run/heimdall/bifrost.sock')
 
+    def test_rate_limiter_and_session_log(self):
+        limiter = c.RateLimiter(2)
+        self.assertTrue(limiter.acquire())
+        self.assertTrue(limiter.acquire())
+        self.assertFalse(limiter.acquire(timeout=0.01))
+        limiter.last -= 60
+        self.assertTrue(limiter.acquire(timeout=0.01))
+        with tempfile.TemporaryDirectory() as directory:
+            log = c.SessionLog(directory)
+            log.write(kind='test', value=1)
+            records = [json.loads(line) for line in log.path.read_text().splitlines()]
+            self.assertEqual(records[0]['kind'], 'test')
+            self.assertEqual(records[0]['seq'], 1)
+
+    def test_mode_set_confirmation_and_daemon_request(self):
+        daemon = Mock()
+        daemon.request.return_value = {'ok': True, 'previous': 'hybrid', 'current': 'sandbox'}
+        with patch('builtins.input', return_value='I UNDERSTAND THE RISK'):
+            self.assertEqual(c.cmd_mode_set(self.pal, daemon, 'sandbox'), 0)
+        daemon.request.assert_called_once_with({
+            'op': 'mode_set',
+            'mode': 'sandbox',
+            'phrase': 'I UNDERSTAND THE RISK',
+        })
+        self.assertEqual(c.cmd_mode_set(self.pal, daemon, 'invalid'), 2)
+        with patch('builtins.input', return_value='wrong'):
+            self.assertEqual(c.cmd_mode_set(self.pal, daemon, 'hybrid'), 3)
+
 
 class LiveIntegrationTests(unittest.TestCase):
     def setUp(self):

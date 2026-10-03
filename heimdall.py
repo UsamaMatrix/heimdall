@@ -30,8 +30,10 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -41,13 +43,71 @@ if str(SCRIPT_DIR) not in sys.path:
 from executor import run_command
 from scanners import scan
 
-VERSION = "2.0.0-m3"
+VERSION = "2.0.0-m4"
 DEFAULT_LLM_URL   = os.environ.get("HEIMDALL_LLM_URL",
                                    "http://127.0.0.1:11434/v1/chat/completions")
 DEFAULT_LLM_MODEL = os.environ.get("HEIMDALL_LLM_MODEL", "qwen2.5-coder:7b")
 MAX_OUTPUT_TAIL   = 2000      # chars of stdout/stderr fed back to LLM
 MAX_CAPTURE_BYTES = 1024 * 1024  # per stream, older output is discarded
 DEFAULT_TIMEOUT   = 180       # seconds per command
+
+
+class RateLimiter:
+    """Small client-side token bucket; daemon policy remains authoritative."""
+    def __init__(self, per_minute=30):
+        self.capacity = float(per_minute)
+        self.tokens = float(per_minute)
+        self.refill = per_minute / 60.0
+        self.last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self, n=1, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self.tokens = min(
+                    self.capacity, self.tokens + (now - self.last) * self.refill)
+                self.last = now
+                if self.tokens >= n:
+                    self.tokens -= n
+                    return True
+                if self.refill <= 0:
+                    return False
+                wait = (n - self.tokens) / self.refill
+            if time.monotonic() + wait > deadline:
+                return False
+            time.sleep(min(wait, 0.25))
+
+
+class SessionLog:
+    def __init__(self, directory=None):
+        base = Path(directory) if directory else (Path.home() / ".heimdall")
+        base.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(str(base), 0o700)
+        except Exception:
+            pass
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.path = base / f"session-{stamp}.jsonl"
+        self._seq = 0
+        self._lock = threading.Lock()
+
+    def write(self, **fields):
+        with self._lock:
+            self._seq += 1
+            record = {
+                "seq": self._seq,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "pid": os.getpid(),
+            }
+            record.update(fields)
+            line = json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n"
+            try:
+                with open(self.path, "a", encoding="utf-8") as stream:
+                    stream.write(line)
+            except Exception:
+                pass
 
 # ---------------------------------------------------------------------------
 # Palette (Watchtower)
@@ -670,16 +730,57 @@ def cmd_mode_show(pal, daemon):
         print(pal.symbol(f"     {pal.dim('flag')}   {k:<48} → {v}"))
     return 0
 
-def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEOUT):
+def cmd_mode_set(pal, daemon, new_mode):
+    if new_mode not in ("sandbox", "direct", "hybrid"):
+        print("usage: sudo heimdall mode set sandbox|direct|hybrid")
+        return 2
+    expected = "I UNDERSTAND THE RISK"
+    print(f"  Type exactly to confirm: {pal.accent(expected)}")
+    try:
+        got = input("  > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 3
+    if got != expected:
+        print(f"  {pal.deny('✘')}  phrase mismatch")
+        return 3
+    try:
+        response = daemon.request({"op": "mode_set", "mode": new_mode, "phrase": got})
+    except DaemonError as exc:
+        print(f"  {pal.deny('✘')}  {exc}")
+        return 1
+    if not response.get("ok"):
+        print(f"  {pal.deny('✘')}  {response.get('error')}")
+        return 1
+    print(pal.symbol(
+        f"  {pal.allow('✔')}  mode {response.get('previous')} → {response.get('current')}"))
+    return 0
+
+
+def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEOUT,
+                    rate_limiter=None, session_log=None):
     """Skip LLM. Send cmd directly to daemon, confirm, execute."""
+    if rate_limiter and not rate_limiter.acquire():
+        print(f"  {pal.deny('✘')}  client rate limit exceeded")
+        return 5
+    if session_log:
+        session_log.write(kind="one_command_start", command=cmd, version=VERSION)
     try:
         v = daemon.verdict(cmd)
     except DaemonError as e:
         print(f"  {pal.deny('✘')}  {e}")
+        if session_log:
+            session_log.write(kind="error", command=cmd, error=str(e))
         return 1
+    if session_log:
+        session_log.write(kind="verdict", command=cmd, verdict=v.get("verdict"),
+                          mode=v.get("mode"), flag=v.get("flag_path"),
+                          reason=v.get("reason"))
     _render_verdict(pal, v)
     print(f"  {pal.dim('command:')} {pal.fgmain(cmd)}")
     if v.get("verdict") in ("DENY", "DEFER"):
+        if session_log:
+            session_log.write(kind="one_command_end", status="denied", rc=2)
         return 2
     if v.get("verdict") == "ASK":
         phrase = confirm(pal, v)
@@ -698,7 +799,15 @@ def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEO
     rc, blocked, _out, _err = _execute_with_policy(
         pal, daemon, cmd, v, dry_run, timeout, ascii_only)
     if blocked:
+        if session_log:
+            session_log.write(kind="exec", command=cmd, rc=5, blocked=True,
+                              sandboxed=False)
+            session_log.write(kind="one_command_end", status="blocked", rc=5)
         return 5
+    if session_log:
+        session_log.write(kind="exec", command=cmd, rc=rc, blocked=False,
+                          dry_run=dry_run)
+        session_log.write(kind="one_command_end", status="done", rc=rc)
     return rc
 
 # ---------------------------------------------------------------------------
@@ -706,9 +815,11 @@ def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEO
 # ---------------------------------------------------------------------------
 
 def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
-              timeout=DEFAULT_TIMEOUT):
+              timeout=DEFAULT_TIMEOUT, rate_limiter=None, session_log=None):
     history = []
     step = 0
+    if session_log:
+        session_log.write(kind="session_start", goal=goal, version=VERSION)
     print(f"  {pal.accent('⛨')}  goal: {pal.fgmain(goal)}")
     try:
         mode = daemon.mode_show().get('mode', '?')
@@ -728,14 +839,23 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
             except LLMError as e:
                 sp.resolve("DENY", reason="LLM error")
                 print(f"  {pal.deny('✘')}  {e}")
+                if session_log:
+                    session_log.write(kind="session_end", status="error", steps=step,
+                                      error=str(e))
                 return 1
 
         action = plan.get("action", "")
         if action == "ask":
             print(f"  {pal.warn('?')}  {plan.get('question','(no question)')}")
+            if session_log:
+                session_log.write(kind="session_end", status="ask", steps=step,
+                                  question=plan.get("question", ""))
             return 0
         if action == "done":
             print(f"  {pal.allow('✔')}  {plan.get('summary','goal complete')}")
+            if session_log:
+                session_log.write(kind="session_end", status="done", steps=step,
+                                  summary=plan.get("summary", ""))
             return 0
         if action != "execute":
             sp.resolve("DENY", reason="unknown action")
@@ -749,6 +869,15 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
 
         print(f"  {pal.dim('reasoning:')} {plan.get('reasoning','')}")
         print(f"  {pal.dim('proposed:')}  {pal.fgmain(cmd)}")
+        if session_log:
+            session_log.write(kind="plan", command=cmd,
+                              reasoning=plan.get("reasoning", ""))
+        if rate_limiter and not rate_limiter.acquire():
+            print(f"  {pal.deny('✘')}  client rate limit exceeded")
+            if session_log:
+                session_log.write(kind="session_end", status="rate_limited",
+                                  steps=step)
+            return 5
 
         with Bifrost(pal, "consulting policy", ascii_only) as sp:
             try:
@@ -758,8 +887,14 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
                 return 1
             sp.resolve(v["verdict"], v.get("mode"), v.get("reason"))
         _render_verdict(pal, v, brief=True)
+        if session_log:
+            session_log.write(kind="verdict", command=cmd, verdict=v.get("verdict"),
+                              mode=v.get("mode"), flag=v.get("flag_path"),
+                              reason=v.get("reason"))
 
         if v["verdict"] in ("DENY", "DEFER"):
+            if session_log:
+                session_log.write(kind="session_end", status="denied", steps=step)
             return 2
 
         if v["verdict"] == "ASK":
@@ -775,19 +910,31 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
         error = authorization_error(v, cmd, dry_run)
         if error:
             print(f"  {pal.deny('✘')}  {error}")
+            if session_log:
+                session_log.write(kind="session_end", status="blocked",
+                                  steps=step, error=error)
             return 4
 
         if (len(history) >= 2 and all(item['command'] == cmd for item in history[-2:])
                 and all(history[-1][key] == history[-2][key]
                         for key in ('exit', 'stdout_tail', 'stderr_tail'))):
             print(pal.warn("  repeated command without progress; stopping"))
+            if session_log:
+                session_log.write(kind="session_end", status="repeated", steps=step)
             return 5
 
         rc, blocked, out, err = _execute_with_policy(
             pal, daemon, cmd, v, dry_run, timeout, ascii_only)
         if dry_run:
+            if session_log:
+                session_log.write(kind="exec", command=cmd, rc=rc, dry_run=True,
+                                  sandboxed=False)
+                session_log.write(kind="session_end", status="dry_run", steps=step)
             return rc
         if blocked:
+            if session_log:
+                session_log.write(kind="exec", command=cmd, rc=5, blocked=True,
+                                  sandboxed=False)
             history.append({
                 "command": cmd,
                 "exit": 5,
@@ -804,6 +951,10 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
             "purpose": plan.get("reasoning", ""),
         }
         history.append(hist)
+        if session_log:
+            session_log.write(kind="exec", command=cmd, rc=rc,
+                              duration_ms=None,
+                              sandboxed=bool(v.get("mode") == "sandbox"))
         _print_output(pal, rc, out, err)
 
         if rc != 0:
@@ -811,6 +962,8 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
             print(f"  {pal.warn('!')}  non-zero exit — feeding error back to the LLM")
 
     print(f"  {pal.warn('!')}  max steps reached")
+    if session_log:
+        session_log.write(kind="session_end", status="max_steps", steps=step)
     return 5
 
 # ---------------------------------------------------------------------------
@@ -905,18 +1058,20 @@ def main():
     dry_run = args.dry_run or (os.name == 'nt' and not args.execute_on_windows)
 
     # subcommands as first positional
-    if args.goal == ['ping'] or args.goal == ['mode', 'show']:
+    if args.goal == ['ping'] or args.goal[:2] == ['mode', 'show'] or args.goal[:2] == ['mode', 'set']:
         sub = args.goal[0]
         if sub == "ping":
             return cmd_ping(pal, daemon)
         if sub == "mode":
-            if len(args.goal) < 2 or args.goal[1] != "show":
-                print("usage: heimdall mode show")
-                return 2
-            return cmd_mode_show(pal, daemon)
+            if args.goal[:2] == ["mode", "show"] and len(args.goal) == 2:
+                return cmd_mode_show(pal, daemon)
+            if args.goal[:2] == ["mode", "set"] and len(args.goal) == 3:
+                return cmd_mode_set(pal, daemon, args.goal[2])
+            print("usage: heimdall mode show | sudo heimdall mode set sandbox|direct|hybrid")
+            return 2
 
     if args.goal == ['mode']:
-        print('usage: heimdall mode show')
+        print('usage: heimdall mode show | sudo heimdall mode set sandbox|direct|hybrid')
         return 2
 
     print_banner(pal)
@@ -928,14 +1083,25 @@ def main():
         daemon.ping()
     except DaemonError as e:
         print(f"  {pal.deny('✘')}  {e}")
-        start = 'python heimdald.py --dev' if os.name == 'nt' or args.dev else 'sudo python3 heimdald.py'
-        print(f"  {pal.dim('start the daemon: ' + start)}")
+        print()
+        print(f"  {pal.dim('daemon not reachable. first time here?')}")
+        print(f"  {pal.dim('  install:')}   sudo ./heimdall-install.sh")
+        if os.name == 'nt' or args.dev:
+            print(f"  {pal.dim('  or run:')}    python heimdald.py --dev")
+        else:
+            print(f"  {pal.dim('  or run:')}    sudo python3 /opt/heimdall/heimdald.py")
+            print(f"  {pal.dim('  check:')}    systemctl status heimdald")
         return 1
+
+    rate_limiter = RateLimiter(30)
+    session_log = SessionLog()
 
     # one-shot --cmd mode
     if args.cmd is not None:
         try:
-            return cmd_one_command(pal, daemon, args.cmd, dry_run, args.ascii, args.timeout)
+            return cmd_one_command(
+                pal, daemon, args.cmd, dry_run, args.ascii, args.timeout,
+                rate_limiter, session_log)
         except KeyboardInterrupt:
             print(pal.dim("\n  interrupted"))
             return 130
@@ -946,7 +1112,8 @@ def main():
     llm = LLMClient(args.llm_url, args.llm_model, timeout=args.timeout * 2)
     try:
         return cmd_agent(pal, daemon, llm, goal, dry_run,
-                         args.max_steps, args.ascii, args.timeout)
+                         args.max_steps, args.ascii, args.timeout,
+                         rate_limiter, session_log)
     except KeyboardInterrupt:
         print(f"\n  {pal.dim('interrupted')}")
         return 130

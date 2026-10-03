@@ -1,13 +1,13 @@
-# Heimdall M3
+# Heimdall M4
 
 Heimdall proposes one command at a time, checks it with a policy daemon, and
 runs approved commands either directly or in a local `bwrap` sandbox. The daemon
 never executes commands; the client uses the privileges of the user who started
 it. The client never reads `safety.yaml` or the daemon's HMAC secret.
 
-M3 includes the client, confirmation flow, direct execution, sandbox execution,
-static scanner hooks, execution audit records, and an LLM loop. Rate limiting,
-session files, systemd units, and the installer remain later milestones.
+M4 includes the client, confirmation flow, direct and sandbox execution, static
+scanner hooks, execution audit records, a Linux installer, a hardened systemd
+unit, client-side rate limiting, per-user session logs, and an LLM loop.
 
 ## Windows development
 
@@ -46,13 +46,35 @@ on `127.0.0.1:47651`; TCP is unauthenticated and for local development only.
 
 ## Kali production setup or update
 
-Stop the old daemon with Ctrl+C. From your existing Desktop checkout:
+Fresh install or reconfigure:
 
 ```bash
 cd ~/Desktop/heimdall
 git pull --ff-only
-sudo apt install python3-yaml bubblewrap shellcheck bandit ruff
+sudo apt install python3-yaml bubblewrap shellcheck bandit
 python3 -m unittest discover -s tests
+sudo chmod +x heimdall-install.sh
+sudo ./heimdall-install.sh
+```
+
+Pick `hybrid` unless you have a reason to force full sandbox or full direct
+mode. The installer copies files to `/opt/heimdall`, installs `heimdall` into
+`/usr/local/bin`, installs `heimdall-install` into `/usr/local/sbin`, writes the
+mode file, installs `heimdald.service`, starts it, and verifies `heimdall ping`.
+
+To reconfigure later:
+
+```bash
+sudo heimdall-install --mode sandbox
+sudo heimdall-install --mode hybrid
+sudo heimdall-install --uninstall
+```
+
+Manual foreground mode still works for development or debugging:
+
+```bash
+sudo systemctl stop heimdald
+cd ~/Desktop/heimdall
 
 sudo install -d -o root -g root -m 0755 /opt/heimdall
 sudo install -o root -g root -m 0755 heimdald.py heimdall.py executor.py scanners.py /opt/heimdall/
@@ -72,6 +94,8 @@ membership and test the client as your normal user:
 newgrp heimdall
 heimdall ping
 heimdall mode show
+sudo heimdall mode set sandbox
+sudo heimdall mode set hybrid
 heimdall --cmd "cat /etc/hostname"
 heimdall --cmd "systemctl status sshd" --dry-run
 heimdall --cmd "nmap -sn 127.0.0.1" --dry-run
@@ -104,9 +128,10 @@ and `block_on_scan_fail` is enabled, and the history shows verdict plus
 `exec_start`/`exec_end` records for executed commands.
 
 Production requires root for the daemon and a private root-owned policy. Its
-socket is `/run/heimdall/bifrost.sock`, mode 0660. `--socket-group heimdall` sets
-the socket group on every startup. Without it, access uses the daemon's group.
-A systemd service is not supplied yet.
+socket is `/run/heimdall/bifrost.sock`, mode 0660. `heimdald.service` runs the
+daemon as root with group `heimdall` and hardening options such as
+`ProtectSystem=strict`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, and
+`RestrictAddressFamilies=AF_UNIX`.
 
 For Linux development, start `python3 heimdald.py --dev` and use
 `python3 heimdall.py --dev ping`. Linux production does not fall back to a
@@ -136,7 +161,7 @@ at `http://127.0.0.1:11434/v1/chat/completions` and `qwen2.5-coder:7b`.
 No SDK or API key is needed for that local endpoint.
 
 Use `--llm-url` / `--llm-model`, or `HEIMDALL_LLM_URL` /
-`HEIMDALL_LLM_MODEL`, for another compatible server. M3 does not add API-key
+`HEIMDALL_LLM_MODEL`, for another compatible server. M4 does not add API-key
 authentication. The configured server receives your goal, executed commands,
 and the last 2,000 characters of each output stream.
 
@@ -152,6 +177,7 @@ after each command finishes, rather than streamed live.
 ```text
 heimdall ping
 heimdall mode show
+sudo heimdall mode set hybrid
 heimdall banner
 heimdall --cmd "ls -la" --dry-run --ascii --no-color
 heimdall --socket /path/to/bifrost.sock --cmd "ls -la"
@@ -186,6 +212,8 @@ token-bound `exec_start`; after execution it sends `exec_end` with return code,
 duration, output hashes, and whether `bwrap` was used.
 
 `ping`, `mode_show`, and root-only production `mode_set` remain supported.
+Use `sudo heimdall mode set sandbox|direct|hybrid`; the daemon checks the socket
+peer uid, so non-root clients are refused in production.
 Request mode overrides are rejected. Exit codes: 1 connection/LLM error,
 2 denial or invalid CLI input, 3 declined confirmation, 4 execution blocked,
 5 loop limit, 124 command timeout, 130 interrupted. One-shot mode otherwise
@@ -199,16 +227,19 @@ subcommands and options before subcommands fail closed. Classification does not
 validate arbitrary script contents, executable provenance, or every argument.
 Direct execution is not an isolation boundary.
 
-Lab environment checks, policy rate limits, confirmation timeouts, and systemd
-units are not enforced yet. Sandbox execution depends on Bubblewrap being
-installed and available as `bwrap`. Missing scanners are reported and skipped;
-blocking happens only when a configured scanner runs and reports a high-severity
-finding. History is hash-chained JSONL, but it cannot protect against an
-attacker rewriting the complete log.
+The client keeps a best-effort per-user session replay log at
+`~/.heimdall/session-YYYY-MM-DD.jsonl`. The daemon history remains the
+authoritative audit log. The client also has a 30/minute token bucket guardrail;
+daemon-side per-peer quotas are a later milestone. Sandbox execution depends on
+Bubblewrap being installed and available as `bwrap`. Missing scanners are
+reported and skipped; blocking happens only when a configured scanner runs and
+reports a high-severity finding. History is hash-chained JSONL, but it cannot
+protect against an attacker rewriting the complete log.
 
 M1 was validated on Windows and Kali, including root production mode and a live
 Unix-socket ping. M2 automated tests cover daemon confirmation, execution gates,
 timeouts, bounded output, socket protocol, CLI previews, and an HTTP mock LLM
 loop. M3 automated tests cover sandbox and scanner metadata, token-bound
-execution audit ops, and the updated client execution path. Real Kali `bwrap`
-and scanner execution still need validation after deployment.
+execution audit ops, and the updated client execution path. M4 tests cover the
+rate limiter, session log, mode-set client path, and installer syntax. Kali
+systemd hardening should be checked with `systemd-analyze security heimdald.service`.
