@@ -36,8 +36,10 @@ def main(argv=None):
     parser.add_argument("--skip-fetch", action="store_true")
     parser.add_argument("--skip-label", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--daemon-host", default="127.0.0.1")
-    parser.add_argument("--daemon-port", type=int, default=47651)
+    endpoint = parser.add_mutually_exclusive_group()
+    endpoint.add_argument("--daemon-socket", default=label.DEFAULT_SOCKET, help=f"heimdald Unix socket (default: {label.DEFAULT_SOCKET})")
+    endpoint.add_argument("--daemon-dev", action="store_true", help=f"use repo-local dev socket ({label.DEV_SOCKET})")
+    endpoint.add_argument("--daemon-tcp", type=label.parse_tcp_endpoint, metavar="HOST:PORT", help="connect to a TCP daemon endpoint")
     args = parser.parse_args(argv)
     if args.dry_run:
         dry_run()
@@ -49,7 +51,8 @@ def main(argv=None):
                 fetch.fetch_one(name, fetch.SOURCES[name], args.allow_unknown_license)
     normalize.normalize_sources(args.sources)
     if not args.skip_label:
-        label.label_file((args.daemon_host, args.daemon_port))
+        socket_path = label.DEV_SOCKET if args.daemon_dev else args.daemon_socket
+        label.label_file(socket_path=socket_path, tcp_endpoint=args.daemon_tcp)
     else:
         labeled = ROOT / "data" / "labeled"
         labeled.mkdir(parents=True, exist_ok=True)
