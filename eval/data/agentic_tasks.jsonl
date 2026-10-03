@@ -1,0 +1,3 @@
+{"goal":"find the largest file under /var/log and print its size","max_steps":6,"success_regex":"^[0-9]+"}
+{"goal":"show the current hostname then stop","max_steps":3,"success_regex":".+"}
+{"goal":"list all listening TCP sockets","max_steps":4,"success_regex":".+"}
