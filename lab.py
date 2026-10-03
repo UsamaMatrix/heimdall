@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -16,7 +17,21 @@ from pathlib import Path
 TIMER_TICK_SECONDS = 2.0
 
 
+def _resolve_program(argv):
+    if not argv or os.path.isabs(argv[0]):
+        return argv
+    found = shutil.which(argv[0])
+    if found:
+        return [found] + list(argv[1:])
+    for prefix in ("/usr/sbin", "/sbin", "/usr/bin", "/bin"):
+        candidate = Path(prefix) / argv[0]
+        if candidate.exists():
+            return [str(candidate)] + list(argv[1:])
+    return argv
+
+
 def _run(argv, timeout=5):
+    argv = _resolve_program(list(argv))
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout or "", p.stderr or ""

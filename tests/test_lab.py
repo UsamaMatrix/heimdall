@@ -30,6 +30,15 @@ class LabTests(unittest.TestCase):
             self.assertFalse(snap['checks']['no_default_route']['ok'])
             self.assertFalse(snap['checks']['no_non_lo_addr']['ok'])
 
+
+    def test_run_resolves_sbin_programs(self):
+        with patch.object(lab.shutil, 'which', return_value=None), \
+                patch.object(lab.Path, 'exists', return_value=True), \
+                patch.object(lab.subprocess, 'run') as run:
+            run.return_value = type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            lab._run(['ip', 'route'])
+            self.assertEqual(Path(run.call_args.args[0][0]).name, 'ip')
+
     def test_evidence_writer_start_and_end(self):
         with tempfile.TemporaryDirectory() as directory:
             sample = Path(directory) / 'malware_sample.py'
@@ -77,3 +86,4 @@ class LabTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
