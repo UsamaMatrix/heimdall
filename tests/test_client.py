@@ -459,6 +459,19 @@ class LiveIntegrationTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_web_audit_guidance_tracks_remaining_commands(self):
+        import heimdall
+        goal = "Authorized security assessment for https://example.com/. Go in depth."
+        guidance = heimdall._web_audit_guidance(goal, [
+            {"command": "curl -I https://example.com/", "exit": 0},
+            {"command": "curl https://example.com/robots.txt", "exit": 0},
+        ])
+        self.assertIn("WEB AUDIT SESSION STATE", guidance)
+        self.assertIn("Completed successful commands", guidance)
+        self.assertIn("curl https://example.com/sitemap.xml", guidance)
+        self.assertNotIn("- HTTP response headers: curl -I https://example.com/", guidance)
+        self.assertTrue(heimdall._premature_web_audit_question(goal, "What other evidence sources can I use?"))
+
 
 if __name__ == '__main__':
     unittest.main()

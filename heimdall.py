@@ -25,6 +25,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import shlex
 import signal
 import socket
@@ -1251,6 +1252,70 @@ def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEO
 # Agent loop
 # ---------------------------------------------------------------------------
 
+def _is_web_audit_goal(goal):
+    text = (goal or "").lower()
+    return ("http://" in text or "https://" in text) and any(
+        word in text for word in ("audit", "assessment", "security", "vulnerab", "recon", "pentest", "test")
+    )
+
+def _goal_url_host(goal):
+    match = re.search(r"https?://([^/\s]+)", goal or "")
+    if not match:
+        return None
+    return match.group(1).strip().strip(".,;:)]}")
+
+def _web_audit_guidance(goal, history):
+    if not _is_web_audit_goal(goal):
+        return ""
+    host = _goal_url_host(goal)
+    if not host:
+        return ""
+    base = f"https://{host}"
+    completed = [h.get("command", "") for h in history if h.get("exit") == 0]
+    completed_set = set(completed)
+    plan = [
+        ("HTTP response headers", f"curl -I {base}/"),
+        ("robots.txt", f"curl {base}/robots.txt"),
+        ("sitemap.xml", f"curl {base}/sitemap.xml"),
+        ("WordPress REST API headers", f"curl -I {base}/wp-json/"),
+        ("WordPress public page API headers", f"curl -I {base}/wp-json/wp/v2/pages/2382"),
+        ("WHOIS registration", f"whois {host}"),
+        ("DNS records", f"dig {host}"),
+        ("environment file exposure probe", f"curl -I {base}/.env"),
+        ("git metadata exposure probe", f"curl -I {base}/.git/HEAD"),
+        ("backup archive exposure probe", f"curl -I {base}/backup.zip"),
+        ("security contact policy", f"curl -I {base}/.well-known/security.txt"),
+    ]
+    remaining = [(name, cmd) for name, cmd in plan if cmd not in completed_set]
+    lines = [
+        "WEB AUDIT SESSION STATE",
+        "The user requested an in-depth authorized web audit.",
+        "Continue through the evidence plan without asking what evidence source to use next.",
+        "Never repeat any completed command.",
+    ]
+    if completed:
+        lines.append("Completed successful commands:")
+        lines.extend(f"- {cmd}" for cmd in completed[-12:])
+    if remaining:
+        lines.append("Choose the first useful remaining command, or another distinct in-scope passive command:")
+        lines.extend(f"- {name}: {cmd}" for name, cmd in remaining[:8])
+    else:
+        lines.append("All standard passive checks are complete; return action done with findings, proof, impact, and remediation.")
+    return "\n".join(lines)
+
+def _premature_web_audit_question(goal, question):
+    if not _is_web_audit_goal(goal):
+        return False
+    q = (question or "").lower()
+    return any(phrase in q for phrase in (
+        "what other evidence",
+        "what evidence",
+        "what else",
+        "can i use",
+        "how should i proceed",
+        "what should i do",
+    ))
+
 def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
               timeout=DEFAULT_TIMEOUT, rate_limiter=None, session_log=None,
               project_memory=None, auto_approve=False):
@@ -1276,10 +1341,12 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
 
         with Bifrost(pal, "reasoning", ascii_only) as sp:
             try:
-                plan = llm.propose(goal, history, project_context)
+                dynamic_context = "\n\n".join(x for x in (project_context, _web_audit_guidance(goal, history)) if x)
+                plan = llm.propose(goal, history, dynamic_context)
             except LLMError as first_error:
                 try:
-                    plan = llm.repair_propose(goal, history, project_context, str(first_error))
+                    dynamic_context = "\n\n".join(x for x in (project_context, _web_audit_guidance(goal, history)) if x)
+                    plan = llm.repair_propose(goal, history, dynamic_context, str(first_error))
                     print(f"  {pal.warn('!')}  repaired malformed LLM response")
                 except LLMError as e:
                     sp.resolve("DENY", reason="LLM error")
@@ -1291,10 +1358,25 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
 
         action = plan.get("action", "")
         if action == "ask":
-            print(f"  {pal.warn('?')}  {plan.get('question','(no question)')}")
+            question = plan.get("question", "")
+            if _premature_web_audit_question(goal, question):
+                message = ("premature web-audit question rejected; choose the next distinct in-scope "
+                           "passive evidence command from the session state.")
+                print(f"  {pal.warn('!')}  {message}")
+                if session_log:
+                    session_log.write(kind="premature_ask", question=question, steps=step)
+                history.append({
+                    "command": "ASK",
+                    "exit": 5,
+                    "stdout_tail": "",
+                    "stderr_tail": message,
+                    "purpose": "web audit continuation guard",
+                })
+                continue
+            print(f"  {pal.warn('?')}  {question or '(no question)'}")
             if session_log:
                 session_log.write(kind="session_end", status="ask", steps=step,
-                                  question=plan.get("question", ""))
+                                  question=question)
             return 0
         if action == "done":
             print(f"  {pal.allow('✔')}  {plan.get('summary','goal complete')}")
