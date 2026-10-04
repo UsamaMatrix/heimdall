@@ -540,6 +540,10 @@ class LLMClient:
             messages.append({"role": "user", "content": project_context})
         messages.append({"role": "user", "content": f"GOAL: {goal}"})
         for h in history:
+            if h.get("kind") == "hint":
+                messages.append({"role": "user",
+                                 "content": "HEIMDALL HINT:\n" + h.get("stderr_tail", "")})
+                continue
             messages.append({"role": "assistant",
                              "content": json.dumps({"action": "execute",
                                                     "command": h["command"],
@@ -1297,7 +1301,10 @@ def _web_audit_guidance(goal, history):
         lines.append("Completed successful commands:")
         lines.extend(f"- {cmd}" for cmd in completed[-12:])
     if remaining:
-        lines.append("Choose the first useful remaining command, or another distinct in-scope passive command:")
+        next_name, next_cmd = remaining[0]
+        lines.append(f"NEXT COMMAND TO PROPOSE EXACTLY: {next_cmd}")
+        lines.append(f"Purpose: {next_name}.")
+        lines.append("Then continue with these remaining commands in order:")
         lines.extend(f"- {name}: {cmd}" for name, cmd in remaining[:8])
     else:
         lines.append("All standard passive checks are complete; return action done with findings, proof, impact, and remediation.")
@@ -1366,7 +1373,8 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
                 if session_log:
                     session_log.write(kind="premature_ask", question=question, steps=step)
                 history.append({
-                    "command": "ASK",
+                    "kind": "hint",
+                    "command": "__HEIMDALL_HINT__",
                     "exit": 5,
                     "stdout_tail": "",
                     "stderr_tail": message,
@@ -1393,6 +1401,20 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
         if not cmd:
             sp.resolve("DENY", reason="empty command")
             return 1
+
+        if _is_web_audit_goal(goal) and cmd.upper() == "ASK":
+            message = ("literal ASK is not an executable command; continue with the next distinct "
+                       "in-scope passive evidence command from the session state.")
+            print(f"  {pal.warn('!')}  {message}")
+            history.append({
+                "kind": "hint",
+                "command": "__HEIMDALL_HINT__",
+                "exit": 5,
+                "stdout_tail": "",
+                "stderr_tail": message,
+                "purpose": "literal ASK guard",
+            })
+            continue
 
         print(f"  {pal.dim('reasoning:')} {plan.get('reasoning','')}")
         print(f"  {pal.dim('proposed:')}  {pal.fgmain(cmd)}")

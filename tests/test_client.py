@@ -468,9 +468,19 @@ class LiveIntegrationTests(unittest.TestCase):
         ])
         self.assertIn("WEB AUDIT SESSION STATE", guidance)
         self.assertIn("Completed successful commands", guidance)
-        self.assertIn("curl https://example.com/sitemap.xml", guidance)
+        self.assertIn("NEXT COMMAND TO PROPOSE EXACTLY: curl https://example.com/sitemap.xml", guidance)
         self.assertNotIn("- HTTP response headers: curl -I https://example.com/", guidance)
         self.assertTrue(heimdall._premature_web_audit_question(goal, "What other evidence sources can I use?"))
+
+    def test_hint_history_is_not_rendered_as_execute_command(self):
+        import heimdall
+        client = heimdall.LLMClient("http://127.0.0.1:9", "dummy")
+        messages = client._messages("Authorized security assessment for https://example.com/", [
+            {"kind": "hint", "command": "__HEIMDALL_HINT__", "exit": 5, "stderr_tail": "continue", "purpose": "guard"},
+        ])
+        joined = "\n".join(m["content"] for m in messages)
+        self.assertIn("HEIMDALL HINT", joined)
+        self.assertNotIn('"command": "__HEIMDALL_HINT__"', joined)
 
 
 if __name__ == '__main__':
