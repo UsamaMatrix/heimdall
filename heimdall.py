@@ -1268,16 +1268,12 @@ def _goal_url_host(goal):
         return None
     return match.group(1).strip().strip(".,;:)]}")
 
-def _web_audit_guidance(goal, history):
-    if not _is_web_audit_goal(goal):
-        return ""
+def _web_audit_plan(goal):
     host = _goal_url_host(goal)
     if not host:
-        return ""
+        return [], None, None
     base = f"https://{host}"
-    completed = [h.get("command", "") for h in history if h.get("exit") == 0]
-    completed_set = set(completed)
-    plan = [
+    return [
         ("HTTP response headers", f"curl -I {base}/"),
         ("robots.txt", f"curl {base}/robots.txt"),
         ("sitemap.xml", f"curl {base}/sitemap.xml"),
@@ -1289,8 +1285,21 @@ def _web_audit_guidance(goal, history):
         ("git metadata exposure probe", f"curl -I {base}/.git/HEAD"),
         ("backup archive exposure probe", f"curl -I {base}/backup.zip"),
         ("security contact policy", f"curl -I {base}/.well-known/security.txt"),
-    ]
+    ], host, base
+
+def _web_audit_remaining(goal, history):
+    plan, _host, _base = _web_audit_plan(goal)
+    completed = [h.get("command", "") for h in history if h.get("exit") == 0]
+    completed_set = set(completed)
     remaining = [(name, cmd) for name, cmd in plan if cmd not in completed_set]
+    return plan, completed, remaining
+
+def _web_audit_guidance(goal, history):
+    if not _is_web_audit_goal(goal):
+        return ""
+    plan, completed, remaining = _web_audit_remaining(goal, history)
+    if not plan:
+        return ""
     lines = [
         "WEB AUDIT SESSION STATE",
         "The user requested an in-depth authorized web audit.",
@@ -1322,6 +1331,21 @@ def _premature_web_audit_question(goal, question):
         "how should i proceed",
         "what should i do",
     ))
+
+
+def _noisy_web_audit_command(goal, cmd):
+    if not _is_web_audit_goal(goal):
+        return False, ""
+    plan, _completed, remaining = _web_audit_remaining(goal, [])
+    planned_commands = {command for _name, command in plan}
+    if cmd in planned_commands:
+        return False, ""
+    lower = (cmd or "").lower()
+    if re.search(r"/wp-json/wp/v2/(posts|pages)/\d+", lower):
+        next_cmd = remaining[0][1] if remaining else "return action done with findings and remediation"
+        return True, ("noisy WordPress REST ID enumeration rejected; this passive audit should not walk "
+                      f"numbered post/page IDs. Use the planned next command instead: {next_cmd}")
+    return False, ""
 
 def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
               timeout=DEFAULT_TIMEOUT, rate_limiter=None, session_log=None,
@@ -1413,6 +1437,19 @@ def cmd_agent(pal, daemon, llm, goal, dry_run, max_steps, ascii_only,
                 "stdout_tail": "",
                 "stderr_tail": message,
                 "purpose": "literal ASK guard",
+            })
+            continue
+
+        noisy, noisy_message = _noisy_web_audit_command(goal, cmd)
+        if noisy:
+            print(f"  {pal.warn('!')}  {noisy_message}")
+            history.append({
+                "kind": "hint",
+                "command": "__HEIMDALL_HINT__",
+                "exit": 5,
+                "stdout_tail": "",
+                "stderr_tail": noisy_message,
+                "purpose": "web audit noisy-command guard",
             })
             continue
 

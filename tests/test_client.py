@@ -482,6 +482,20 @@ class LiveIntegrationTests(unittest.TestCase):
         self.assertIn("HEIMDALL HINT", joined)
         self.assertNotIn('"command": "__HEIMDALL_HINT__"', joined)
 
+    def test_web_audit_rejects_noisy_wordpress_id_enumeration(self):
+        import heimdall
+        noisy, message = heimdall._noisy_web_audit_command(
+            "Authorized security assessment for https://example.com/",
+            "curl https://example.com/wp-json/wp/v2/posts/2402",
+        )
+        self.assertTrue(noisy)
+        self.assertIn("noisy WordPress REST ID enumeration rejected", message)
+        noisy, _message = heimdall._noisy_web_audit_command(
+            "Authorized security assessment for https://example.com/",
+            "curl -I https://example.com/wp-json/wp/v2/pages/2382",
+        )
+        self.assertFalse(noisy)
+
 
 if __name__ == '__main__':
     unittest.main()
