@@ -171,6 +171,14 @@ messages:
   code_execute: >-
     About to execute generated code that has not been human-reviewed.
     Proceed at your own responsibility?
+  scope_required: >-
+    Bug bounty playbook requires --scope-file. No scope, no commands.
+  out_of_scope: >-
+    Target is outside the declared scope. Refusing. Review the scope file
+    if this is a mistake.
+  ctf_authorization: >-
+    Confirm this CTF is authorized. You are responsible for ensuring the
+    challenge permits the techniques you are about to use.
   unsafe_code: >-
     Generated code uses constructs that bypass memory or type safety
     (Rust `unsafe`, Python `ctypes`/`exec`/`eval`). Review carefully.
@@ -288,6 +296,13 @@ domains:
           ftp_enum: { action: warn, message_key: offensive_active }
           ssh_enum: { action: warn, message_key: offensive_active }
           netbios_enum: { action: warn, message_key: offensive_active }
+          ctf_dirb: { action: warn, message_key: offensive_active }
+          ctf_feroxbuster: { action: warn, message_key: offensive_active }
+          ctf_gobuster: { action: warn, message_key: offensive_active }
+          ctf_ffuf: { action: warn, message_key: offensive_active }
+          ctf_nikto: { action: warn, message_key: offensive_active }
+          ctf_whatweb: { action: warn, message_key: offensive_active }
+          ctf_wpscan_light: { action: warn, message_key: offensive_active }
 
       vulnerability:
         enabled: true
@@ -315,6 +330,10 @@ domains:
           beefts_hook: { action: warn, message_key: offensive_exploit }
           kernel_exploit: { action: warn, message_key: offensive_exploit }
           container_escape: { action: warn, message_key: offensive_exploit }
+          ctf_reverse_shell: { action: warn, message_key: offensive_exploit }
+          ctf_payload_gen: { action: warn, message_key: offensive_exploit }
+          ctf_bof_local: { action: warn, message_key: offensive_exploit }
+          ctf_privesc_check: { action: warn, message_key: offensive_post }
 
       credentials:
         enabled: true
@@ -389,6 +408,10 @@ domains:
           proxychains: { action: warn, message_key: offensive_post }
           persistence_install: { action: warn, message_key: offensive_post }
           lateral_movement: { action: warn, message_key: offensive_post }
+          ctf_linpeas: { action: warn, message_key: offensive_post }
+          ctf_pspy: { action: warn, message_key: offensive_post }
+          ctf_flag_search: true
+          ctf_sudo_check: true
 
       c2:
         enabled: true
@@ -420,6 +443,71 @@ domains:
           evil_winrm: { action: warn, message_key: offensive_ad }
           iot_embedded_attack: { action: warn, message_key: offensive_active }
           ot_ics_attack: { action: warn, message_key: offensive_active }
+
+  # ===================================================================
+  bug_bounty:
+    enabled: true
+    description: "Bug bounty work with scope enforcement."
+    flags:
+      scope:
+        enabled: true
+        flags:
+          enforce_scope_file: true
+          deny_out_of_scope: true
+          confirm_scope_parse: true
+      recon:
+        enabled: true
+        flags:
+          subfinder: { action: warn, message_key: offensive_passive }
+          amass_passive: { action: warn, message_key: offensive_passive }
+          assetfinder: { action: warn, message_key: offensive_passive }
+          crtsh_query: true
+          wayback_query: true
+          gau_fetch: true
+      http_probe:
+        enabled: true
+        flags:
+          httpx_probe: { action: warn, message_key: offensive_active }
+          httprobe: { action: warn, message_key: offensive_active }
+          nuclei_low: { action: warn, message_key: offensive_active }
+          nuclei_custom_tpl: { action: warn, message_key: offensive_active }
+      web_api:
+        enabled: true
+        flags:
+          ffuf_scoped: { action: warn, message_key: offensive_active }
+          feroxbuster_scoped: { action: warn, message_key: offensive_active }
+          katana_crawl: { action: warn, message_key: offensive_active }
+          arjun_param: { action: warn, message_key: offensive_active }
+      findings:
+        enabled: true
+        flags:
+          write_report: true
+          generate_poc: { action: warn, message_key: offensive_exploit }
+          auto_submit_platform: false
+
+  # ===================================================================
+  self_hacking:
+    enabled: true
+    description: "Personal labs, home network, self-owned infra."
+    flags:
+      home_network:
+        enabled: true
+        flags:
+          discovery: { action: warn, message_key: offensive_active }
+          scan: { action: warn, message_key: offensive_active }
+          device_fingerprint: { action: warn, message_key: offensive_active }
+      home_lab:
+        enabled: true
+        flags:
+          vm_scan: { action: warn, message_key: offensive_active }
+          docker_scan: { action: warn, message_key: offensive_active }
+          self_exploit: { action: warn, message_key: offensive_exploit }
+      local_hardening:
+        enabled: true
+        flags:
+          audit: true
+          config_check: true
+          apply_patch: { action: warn, message_key: privileged }
 
   # ===================================================================
   blue_teaming:
@@ -725,6 +813,10 @@ command_map:
   spiderfoot: red_teaming.recon.osint_harvester
   amass: red_teaming.recon.subdomain_enum_passive
   shodan: red_teaming.recon.shodan_query
+  subfinder: bug_bounty.recon.subfinder
+  assetfinder: bug_bounty.recon.assetfinder
+  gau: bug_bounty.recon.gau_fetch
+  httpx: bug_bounty.http_probe.httpx_probe
   maltego: red_teaming.recon.maltego_graph
 
   # --- red: scanning ---
@@ -739,6 +831,13 @@ command_map:
   ldapsearch: red_teaming.scanning.ldap_enum
   snmpwalk: red_teaming.scanning.snmp_enum
   nbtscan: red_teaming.scanning.netbios_enum
+  feroxbuster: bug_bounty.web_api.feroxbuster_scoped
+  katana: bug_bounty.web_api.katana_crawl
+  arjun: bug_bounty.web_api.arjun_param
+  whatweb: red_teaming.scanning.ctf_whatweb
+  dirb: red_teaming.scanning.ctf_dirb
+  gobuster: red_teaming.scanning.ctf_gobuster
+  ffuf: red_teaming.scanning.ctf_ffuf
 
   # --- red: vulnerability ---
   openvas: red_teaming.vulnerability.openvas_scan
@@ -758,6 +857,10 @@ command_map:
   r2: red_teaming.exploitation.radare2_analysis
   ghidra: red_teaming.exploitation.ghidra_analysis
   gdb: red_teaming.exploitation.gdb_analysis
+  linpeas: red_teaming.post_exploitation.ctf_linpeas
+  linpeas.sh: red_teaming.post_exploitation.ctf_linpeas
+  pspy: red_teaming.post_exploitation.ctf_pspy
+  pspy64: red_teaming.post_exploitation.ctf_pspy
 
   # --- red: credentials ---
   hydra: red_teaming.credentials.hydra_bruteforce

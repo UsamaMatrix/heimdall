@@ -36,6 +36,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1252,6 +1253,275 @@ def cmd_one_command(pal, daemon, cmd, dry_run, ascii_only, timeout=DEFAULT_TIMEO
         session_log.write(kind="one_command_end", status="done", rc=rc)
     return rc
 
+
+# ---------------------------------------------------------------------------
+# Playbook runner
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PhaseState:
+    id: str
+    status: str = "pending"
+
+@dataclass
+class PlaybookState:
+    playbook: str
+    target: str
+    phases: dict = field(default_factory=dict)
+    completed_at: str = ""
+    deviations: list = field(default_factory=list)
+    timeline: list = field(default_factory=list)
+
+class PlaybookRunner:
+    def __init__(self, name, target, state_dir=None):
+        self.name = name
+        self.target = target
+        self.root = Path(__file__).resolve().parent
+        self.path = self._find_playbook(name)
+        self.pb = self._load_yaml(self.path)
+        self.state_dir = Path(state_dir) if state_dir else (_heimdall_home() / "playbooks")
+        safe_target = re.sub(r"[^A-Za-z0-9_.-]+", "_", target or "target")[:80]
+        self.state_path = self.state_dir / f"{name}-{safe_target}.json"
+        self.state = self._load_state()
+
+    def _find_playbook(self, name):
+        candidates = [Path(name)]
+        if not str(name).endswith(('.yaml', '.yml')):
+            candidates.append(self.root / "playbooks" / f"{name}.yaml")
+            candidates.append(Path('/opt/heimdall/playbooks') / f"{name}.yaml")
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError(f"playbook not found: {name}")
+
+    def _load_yaml(self, path):
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("PyYAML required") from exc
+        with open(path, encoding='utf-8') as handle:
+            data = yaml.safe_load(handle) or {}
+        if not isinstance(data, dict) or not data.get('name'):
+            raise ValueError(f"invalid playbook: {path}")
+        return data
+
+    def _load_state(self):
+        phases = {p.get('id'): PhaseState(p.get('id')) for p in self.pb.get('phases', []) if p.get('id')}
+        if self.state_path.exists():
+            try:
+                data = json.loads(self.state_path.read_text(encoding='utf-8'))
+                phases.update({k: PhaseState(k, v.get('status', 'pending')) for k, v in data.get('phases', {}).items()})
+                return PlaybookState(
+                    playbook=data.get('playbook', self.name), target=data.get('target', self.target),
+                    phases=phases, completed_at=data.get('completed_at', ''),
+                    deviations=data.get('deviations', []), timeline=data.get('timeline', []))
+            except Exception:
+                pass
+        return PlaybookState(self.name, self.target, phases)
+
+    def _save(self):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            'playbook': self.state.playbook,
+            'target': self.state.target,
+            'phases': {k: {'status': v.status} for k, v in self.state.phases.items()},
+            'completed_at': self.state.completed_at,
+            'deviations': self.state.deviations,
+            'timeline': self.state.timeline,
+        }
+        self.state_path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+
+    def is_complete(self) -> bool:
+        if self.state.completed_at:
+            return True
+        if self.pb.get('completion_mode') == 'objectives' and self.pb.get('objectives'):
+            required = [o['id'] for o in self.pb['objectives']]
+            hits = {d['id'] for d in self.state.deviations if d.get('kind') == 'objective'}
+            return all(rid in hits for rid in required)
+        req = (self.pb.get('completion') or {}).get('require_phases', [])
+        if not req:
+            return all(s.status == 'done' for s in self.state.phases.values())
+        return all(self.state.phases.get(p, PhaseState(id=p)).status == 'done' for p in req)
+
+    def _format_command(self, command):
+        values = {'target': self.target, 'open_ports': '80,443', 'service_name': self.target}
+        try:
+            return command.format(**values)
+        except KeyError:
+            return command
+
+    def next_step(self):
+        for phase in self.pb.get('phases', []):
+            pid = phase.get('id')
+            if not pid:
+                continue
+            if self.state.phases.setdefault(pid, PhaseState(pid)).status == 'done':
+                continue
+            for step in phase.get('steps', []):
+                sid = step.get('id')
+                if not sid:
+                    continue
+                done = {t.get('step_id') for t in self.state.timeline if t.get('status') in ('done', 'dry_run')}
+                if sid in done:
+                    continue
+                item = dict(step)
+                item['phase_id'] = pid
+                item['phase_name'] = phase.get('name', pid)
+                item['command'] = self._format_command(step.get('command', ''))
+                return item
+            self.state.phases[pid].status = 'done'
+            self._save()
+        return None
+
+    def check_proposal(self, cmd):
+        for forbidden in (self.pb.get('guards') or {}).get('forbidden_commands', []):
+            if forbidden and forbidden in cmd:
+                return False, f"playbook forbids command fragment: {forbidden}"
+        return True, ''
+
+    def record_step(self, step, cmd, rc, status):
+        self.state.timeline.append({
+            'ts': datetime.now(timezone.utc).isoformat(),
+            'phase_id': step.get('phase_id'), 'step_id': step.get('id'),
+            'command': cmd, 'rc': rc, 'status': status,
+        })
+        if rc == 0:
+            phase_id = step.get('phase_id')
+            phase = next((p for p in self.pb.get('phases', []) if p.get('id') == phase_id), {})
+            ids = [s.get('id') for s in phase.get('steps', [])]
+            done = {t.get('step_id') for t in self.state.timeline if t.get('status') in ('done', 'dry_run')}
+            if ids and all(i in done for i in ids):
+                self.state.phases.setdefault(phase_id, PhaseState(phase_id)).status = 'done'
+        self._save()
+
+    def record_objectives(self, cmd, stdout, stderr, pal=None, session_log=None):
+        objs = self.pb.get('objectives') or []
+        if not objs:
+            return []
+        from objectives import check_output, dedupe_hits
+        hits = dedupe_hits(check_output(objs, cmd, stdout, stderr))
+        recorded = []
+        existing = {d.get('value') for d in self.state.deviations if d.get('kind') == 'objective'}
+        for hit in hits:
+            key = f"{hit.id}={hit.value}"
+            if key in existing:
+                continue
+            self.state.deviations.append({
+                'kind': 'objective', 'ts': datetime.now(timezone.utc).isoformat(),
+                'id': hit.id, 'value': key, 'match_type': hit.match_type,
+                'evidence': hit.evidence,
+            })
+            recorded.append(hit)
+            if pal:
+                print(f"  {pal.allow('*')}  objective hit: {hit.id} = {pal.fgmain(hit.value[:80])}")
+            if session_log:
+                session_log.write(kind='objective', id=hit.id, value=hit.value)
+        if recorded:
+            self._save()
+        return recorded
+
+    def mark_complete_if_objectives(self, pal=None):
+        if self.pb.get('completion_mode') != 'objectives':
+            return False
+        if self.is_complete():
+            self.state.completed_at = datetime.now(timezone.utc).isoformat()
+            self._save()
+            if pal:
+                print(f"  {pal.allow('?')}  all objectives captured")
+            return True
+        return False
+
+def cmd_playbook(pal, daemon, args, session_log=None):
+    try:
+        runner = PlaybookRunner(args.playbook, args.target, state_dir=getattr(args, 'playbook_state_dir', None))
+    except Exception as exc:
+        print(f"  {pal.deny('?')}  playbook error: {exc}")
+        return 2
+    print(f"  {pal.accent('?')}  playbook: {runner.pb.get('name')}  target: {args.target}")
+    if args.show_objectives:
+        for obj in runner.pb.get('objectives') or []:
+            print(f"     {pal.dim(obj.get('id', '?') + ': ' + obj.get('description', obj.get('pattern', '')))}")
+    scope = None
+    if runner.pb.get('scope_file_required'):
+        if not args.scope_file:
+            print(f"  {pal.deny('?')}  this playbook requires --scope-file")
+            return 2
+        from scope import Scope
+        try:
+            scope = Scope.load(args.scope_file)
+        except Exception as exc:
+            print(f"  {pal.deny('?')}  scope file error: {exc}")
+            return 2
+        print(f"  {pal.accent('?')}  scope: {scope.program} ({scope.platform})")
+        for line in scope.summary().splitlines():
+            print(f"     {pal.dim(line)}")
+        target_decision = scope.check_target(args.target)
+        if not target_decision.ok:
+            print(f"  {pal.deny('?')}  scope: {target_decision.reason}")
+            return 2
+        if not args.yes_to_plan and sys.stdin.isatty():
+            try:
+                ans = input('  Confirm scope is correct? [y/N] ').strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 3
+            if ans not in ('y', 'yes'):
+                print(f"  {pal.dim('aborted')}")
+                return 3
+    step = runner.next_step()
+    if not step:
+        print(f"  {pal.allow('?')}  playbook complete")
+        return 0
+    cmd = step.get('command', '').strip()
+    ok, reason = runner.check_proposal(cmd)
+    if not ok:
+        print(f"  {pal.deny('?')}  {reason}")
+        return 2
+    if scope:
+        sc = scope.check_command(cmd)
+        if not sc.ok:
+            print(f"  {pal.deny('?')}  scope: {sc.reason}")
+            if session_log:
+                session_log.write(kind='scope_block', command=cmd, reason=sc.reason)
+            return 2
+        rc_scope = scope.check_rules(cmd)
+        if not rc_scope.ok:
+            print(f"  {pal.deny('?')}  scope rule: {rc_scope.reason}")
+            if session_log:
+                session_log.write(kind='scope_rule_block', command=cmd, reason=rc_scope.reason)
+            return 2
+    print(f"  {pal.dim('phase:')} {step.get('phase_name')}  {pal.dim('step:')} {step.get('id')}")
+    print(f"  {pal.dim('purpose:')} {step.get('purpose', '')}")
+    print(f"  {pal.dim('command:')} {pal.fgmain(cmd)}")
+    try:
+        verdict = daemon.verdict(cmd)
+    except DaemonError as exc:
+        print(f"  {pal.deny('?')}  {exc}")
+        return 1
+    _render_verdict(pal, verdict, brief=True)
+    if verdict.get('verdict') in ('DENY', 'DEFER'):
+        return 2
+    if args.dry_run or (os.name == 'nt' and not args.execute_on_windows):
+        runner.record_step(step, cmd, 0, 'dry_run')
+        print(f"  {pal.dim('dry-run ? would execute playbook step')}")
+        return 0
+    if verdict.get('verdict') == 'ASK':
+        phrase = confirm(pal, verdict)
+        if phrase is None:
+            return 3
+        verdict = daemon.verdict(cmd, confirm=True, phrase=phrase)
+        _render_verdict(pal, verdict, brief=True)
+    error = authorization_error(verdict, cmd, False)
+    if error:
+        print(f"  {pal.deny('?')}  {error}")
+        return 4
+    rc, blocked, out, err = _execute_with_policy(pal, daemon, cmd, verdict, False, args.timeout, args.ascii)
+    runner.record_step(step, cmd, rc, 'blocked' if blocked else 'done')
+    runner.record_objectives(cmd, out, err, pal, session_log)
+    runner.mark_complete_if_objectives(pal)
+    _print_output(pal, rc, out, err)
+    return rc
+
 # ---------------------------------------------------------------------------
 # Agent loop
 # ---------------------------------------------------------------------------
@@ -1680,13 +1950,24 @@ def main():
     ap.add_argument("--temp", action="store_true", help="temporary chat: do not write session or project history")
     ap.add_argument("--no-history", action="store_true", help="do not write session history")
     ap.add_argument("--auto-approve", action="store_true", help="accept ASK verdicts silently when policy allows it")
+    ap.add_argument("--playbook", help="run a named playbook from playbooks/<name>.yaml")
+    ap.add_argument("--target", help="playbook target host, CIDR, or URL")
+    ap.add_argument("--scope-file", help="bug-bounty scope YAML")
+    ap.add_argument("--objective-timeout", type=int, default=3600,
+                    help="seconds before an objectives-mode playbook gives up")
+    ap.add_argument("--show-objectives", action="store_true",
+                    help="list playbook objectives at start")
+    ap.add_argument("--yes-to-plan", action="store_true",
+                    help="accept parsed scope/plan prompts for non-interactive playbook runs")
     ap.add_argument("--out", default="heimdall-web-audit.html", help="output path for audit web HTML report")
     ap.add_argument("--version", action="version", version=VERSION)
     args = ap.parse_args()
-    if args.max_steps <= 0 or args.timeout <= 0:
-        ap.error("--max-steps and --timeout must be positive")
+    if args.max_steps <= 0 or args.timeout <= 0 or args.objective_timeout <= 0:
+        ap.error("--max-steps, --timeout, and --objective-timeout must be positive")
     if args.cmd is not None and args.goal:
         ap.error("use either --cmd or a goal")
+    if args.playbook and not args.target:
+        ap.error("--playbook requires --target")
     pal = Palette(enabled=not args.no_color, ascii_only=args.ascii)
     if args.goal == ['banner']:
         print_banner(pal)
@@ -1709,6 +1990,11 @@ def main():
     dry_run = args.dry_run or (os.name == 'nt' and not args.execute_on_windows)
 
     selected_model, model_source = resolve_llm_model(args.llm_model)
+
+    if args.playbook:
+        print_banner(pal)
+        session_log = None if (args.temp or args.no_history) else SessionLog()
+        return cmd_playbook(pal, daemon, args, session_log)
 
     # subcommands as first positional
     if args.goal[:2] == ["audit", "web"]:

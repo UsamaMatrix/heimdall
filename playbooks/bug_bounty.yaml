@@ -1,0 +1,86 @@
+name: bug_bounty
+version: 1
+description: "Bug bounty program - scope-enforced recon and probing."
+scope_required: true
+scope_file_required: true
+completion_mode: objectives
+
+guards:
+  forbidden_commands: [man, nmap, nuclei]
+
+objectives:
+  - id: subdomain
+    pattern: "(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}"
+    match: any
+    save_to: discovered_subdomains
+    description: "Subdomains discovered"
+  - id: sensitive_path
+    pattern: "(?i)(\\.env|\\.git/HEAD|backup\\.(zip|sql|tar\\.gz)|config\\.php|id_rsa)"
+    match: any
+    save_to: sensitive_paths
+    description: "Potentially sensitive files found"
+  - id: finding_marker
+    pattern: "(?i)(critical|high|medium)\\s*[:\\-]\\s*(.+)"
+    match: any
+    save_to: findings
+    description: "Explicit severity-tagged findings"
+
+phases:
+  - id: passive_recon
+    name: "Passive reconnaissance"
+    steps:
+      - id: whois
+        command: "whois {target}"
+        purpose: "Registrar data"
+      - id: dns_a
+        command: "dig +short {target} A"
+        purpose: "A record"
+      - id: dns_mx
+        command: "dig +short {target} MX"
+        purpose: "Mail servers"
+        optional: true
+      - id: crtsh
+        command: "curl -s https://crt.sh/?q=%25.{target}&output=json"
+        purpose: "Certificate transparency subdomains"
+        evidence: discovered_subdomains
+  - id: active_recon
+    name: "Active probing"
+    steps:
+      - id: headers
+        command: "curl -sI https://{target}"
+        purpose: "Response headers"
+        evidence: server_headers
+      - id: www_headers
+        command: "curl -sI https://www.{target}"
+        purpose: "WWW subdomain headers"
+        optional: true
+  - id: common_paths
+    name: "Common path checks (safe-only)"
+    steps:
+      - id: robots
+        command: "curl -s https://{target}/robots.txt"
+      - id: sitemap
+        command: "curl -s https://{target}/sitemap.xml"
+        optional: true
+      - id: security_txt
+        command: "curl -s https://{target}/.well-known/security.txt"
+        optional: true
+      - id: dot_env
+        command: "curl -s -o /dev/null -w '%{http_code}' https://{target}/.env"
+        purpose: "Exposed env file"
+      - id: git_head
+        command: "curl -s -o /dev/null -w '%{http_code}' https://{target}/.git/HEAD"
+        purpose: "Exposed git directory"
+      - id: backup_zip
+        command: "curl -s -o /dev/null -w '%{http_code}' https://{target}/backup.zip"
+        optional: true
+  - id: report
+    name: "Compile findings"
+    steps:
+      - id: summarize
+        command: "echo summarizing"
+        purpose: "Report generation handled by Heimdall"
+
+report:
+  template: bug_bounty
+  sections: [program, scope, subdomains, sensitive_paths, findings, timeline]

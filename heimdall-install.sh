@@ -122,6 +122,8 @@ setup_dirs() {
   install -d -o root -g "$SVCGROUP" -m 0750 "$STATEDIR/history"
   install -d -o root -g "$SVCGROUP" -m 0750 "$STATEDIR/evidence"
   install -d -o root -g root -m 0755 "$SYSCONF"
+  install -d -o root -g root -m 0755 "$PREFIX/playbooks"
+  install -d -o root -g root -m 0755 "$PREFIX/templates" "$PREFIX/templates/reports"
   install -d -o root -g root -m 0755 "$SBINDIR"
   install -d -o root -g root -m 0755 "$MANDIR"
   ok "directories created under $PREFIX, $STATEDIR, $SYSCONF"
@@ -130,7 +132,7 @@ setup_dirs() {
 copy_files() {
   local src
   src="$(source_dir)"
-  for file in heimdald.py heimdall.py executor.py scanners.py ui.py dashboard.py lab.py safety.yaml heimdald.service docs/heimdall.1 heimdall-update; do
+  for file in heimdald.py heimdall.py executor.py scanners.py ui.py dashboard.py lab.py scope.py objectives.py safety.yaml heimdald.service docs/heimdall.1 heimdall-update; do
     [[ -f "$src/$file" ]] || die "missing $src/$file"
   done
   install_if_different 0755 "$src/heimdald.py" "$PREFIX/heimdald.py"
@@ -140,6 +142,8 @@ copy_files() {
   install_if_different 0755 "$src/ui.py" "$PREFIX/ui.py"
   install_if_different 0755 "$src/dashboard.py" "$PREFIX/dashboard.py"
   install_if_different 0755 "$src/lab.py" "$PREFIX/lab.py"
+  install_if_different 0644 "$src/scope.py" "$PREFIX/scope.py"
+  install_if_different 0644 "$src/objectives.py" "$PREFIX/objectives.py"
   install_if_different 0644 "$src/heimdald.service" "$PREFIX/heimdald.service"
   if [[ -f "$src/heimdall-install.sh" ]]; then
     install_if_different 0755 "$src/heimdall-install.sh" "$SBINDIR/heimdall-install"
@@ -148,6 +152,16 @@ copy_files() {
   fi
   install_if_different 0755 "$src/heimdall-update" "$SBINDIR/heimdall-update"
   install_if_different 0644 "$src/docs/heimdall.1" "$MANDIR/heimdall.1"
+  if [[ -d "$src/playbooks" ]]; then
+    for file in "$src"/playbooks/*.yaml; do
+      [[ -f "$file" ]] && install_if_different 0644 "$file" "$PREFIX/playbooks/$(basename "$file")"
+    done
+  fi
+  if [[ -d "$src/templates/reports" ]]; then
+    for file in "$src"/templates/reports/*.j2; do
+      [[ -f "$file" ]] && install_if_different 0644 "$file" "$PREFIX/templates/reports/$(basename "$file")"
+    done
+  fi
   ln -sf "$PREFIX/heimdall.py" "$BINDIR/heimdall"
   ok "programs installed; $BINDIR/heimdall linked"
 

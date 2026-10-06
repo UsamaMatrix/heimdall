@@ -1,0 +1,49 @@
+name: ctf_web
+version: 1
+description: "CTF - Web challenge. Flag capture."
+scope_required: false
+completion_mode: objectives
+
+guards:
+  forbidden_commands: [man]
+
+objectives:
+  - id: flag
+    pattern: "(?:flag|FLAG|CTF|HTB|THM)\\{[^}]{4,128}\\}"
+    match: first
+    save_to: flag
+
+phases:
+  - id: recon
+    name: "Web recon"
+    steps:
+      - id: headers
+        command: "curl -sI {target}"
+        purpose: "Response headers"
+        evidence: server_headers
+      - id: robots
+        command: "curl -s {target}/robots.txt"
+        optional: true
+      - id: page_body
+        command: "curl -s {target}/"
+        purpose: "Fetch landing page for source inspection"
+      - id: comments
+        command: "curl -s {target}/ | grep -E '<!--|TODO|FIXME'"
+        purpose: "Look for HTML comments with hints"
+        optional: true
+  - id: interaction
+    name: "Interaction"
+    steps:
+      - id: cookie_check
+        command: "curl -sI {target}/ | grep -i set-cookie"
+        purpose: "Session cookie shape"
+        optional: true
+      - id: dir_probe
+        command: "curl -s -o /dev/null -w '%{http_code}' {target}/admin"
+        purpose: "Check for common admin path"
+        optional: true
+        freeform: true
+
+report:
+  template: ctf
+  sections: [summary, flag, attack_path, tool_output]

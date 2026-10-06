@@ -1,0 +1,57 @@
+name: self_hack
+version: 1
+description: "Self-hacking - own home lab, VM network, or home infrastructure."
+scope_required: false
+completion_mode: phases
+
+guards:
+  allowed_flag_prefixes: [self_hacking, red_teaming, networking, linux_administration]
+  forbidden_commands: ["rm -rf"]
+
+phases:
+  - id: discovery
+    name: "Local network discovery"
+    steps:
+      - id: my_ip
+        command: "ip -br addr"
+        purpose: "Current interfaces and addresses"
+        evidence: my_ip
+      - id: my_route
+        command: "ip route"
+        purpose: "Default gateway and routes"
+        evidence: gateway
+      - id: arp_sweep
+        command: "arp-scan --localnet"
+        purpose: "Enumerate live devices on LAN"
+        evidence: lan_devices
+        on_failure: continue
+  - id: vm_lab
+    name: "VM lab"
+    steps:
+      - id: virsh_list
+        command: "virsh list --all"
+        purpose: "List libvirt VMs"
+        optional: true
+      - id: docker_ps
+        command: "docker ps --format '{{.Names}} {{.Image}} {{.Status}}'"
+        purpose: "Running containers"
+        optional: true
+  - id: hardening
+    name: "Local hardening audit"
+    steps:
+      - id: sshd_config
+        command: "sudo sshd -T"
+        purpose: "Effective sshd config"
+        optional: true
+      - id: sudoers_check
+        command: "sudo -l"
+        purpose: "Sudo rights for current user"
+        optional: true
+      - id: open_ports_local
+        command: "ss -tlnp"
+        purpose: "Listening TCP sockets"
+        evidence: local_listeners
+
+report:
+  template: self_hack
+  sections: [summary, interfaces, lan_devices, local_listeners, hardening_notes]

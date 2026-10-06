@@ -1,0 +1,84 @@
+name: ctf_linux
+version: 1
+description: "CTF - Linux machine. Flag capture is the goal."
+scope_required: false
+freeform_after: false
+completion_mode: objectives
+
+guards:
+  allowed_flag_prefixes: [red_teaming, linux_administration, networking, forensics]
+  forbidden_commands: ["history -c"]
+
+objectives:
+  - id: user_flag
+    pattern: "(?:flag|FLAG|HTB|THM)\\{[^}]{4,128}\\}|[0-9a-f]{32}"
+    match: first
+    save_to: user_flag
+    description: "User-level flag"
+  - id: root_flag
+    pattern: "(?:root|ROOT|admin)\\{[^}]{4,128}\\}"
+    match: first
+    save_to: root_flag
+    description: "Root-level flag"
+
+phases:
+  - id: recon
+    name: "Foothold reconnaissance"
+    steps:
+      - id: host_discovery
+        command: "nmap -sn {target}"
+        purpose: "Confirm target is up"
+        evidence: live_hosts
+        on_failure: abort
+      - id: full_tcp
+        command: "nmap -sS -T4 -p- {target}"
+        purpose: "All TCP ports"
+        evidence: open_ports
+        on_failure: abort
+        timeout_sec: 600
+      - id: service_scan
+        command: "nmap -sV -sC -p {open_ports} {target}"
+        purpose: "Services + versions + default scripts"
+        on_failure: continue
+  - id: enumeration
+    name: "Service enumeration"
+    steps:
+      - id: whatweb
+        command: "whatweb {target}"
+        purpose: "Web fingerprint if HTTP present"
+        optional: true
+      - id: gobuster_web
+        command: "gobuster dir -u http://{target} -w /usr/share/wordlists/dirb/common.txt -t 20"
+        purpose: "Directory brute on HTTP"
+        optional: true
+        evidence: web_paths
+      - id: smb_enum
+        command: "enum4linux -a {target}"
+        purpose: "SMB/NetBIOS enumeration if 139/445 open"
+        optional: true
+  - id: foothold
+    name: "Foothold"
+    steps:
+      - id: exploit_attempt
+        command: "searchsploit --id {service_name}"
+        purpose: "Look for public exploits for identified services"
+        optional: true
+        freeform: true
+  - id: privesc
+    name: "Privilege escalation"
+    steps:
+      - id: linpeas
+        command: "linpeas.sh"
+        purpose: "Automated privesc enumeration on target"
+        optional: true
+      - id: sudo_check
+        command: "sudo -l"
+        purpose: "Enumerate sudo rights"
+        optional: true
+      - id: flag_search
+        command: "find / -name 'flag*' -type f 2>/dev/null"
+        purpose: "Locate flag files"
+
+report:
+  template: ctf
+  sections: [summary, user_flag, root_flag, attack_path, tool_output]
