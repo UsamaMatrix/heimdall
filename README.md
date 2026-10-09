@@ -9,6 +9,9 @@ M4 includes the client, confirmation flow, direct and sandbox execution, static
 scanner hooks, execution audit records, a Linux installer, a hardened systemd
 unit, client-side rate limiting, per-user session logs, and an LLM loop.
 
+For policy editing, scope files, lab mode, and operator responsibilities, read
+[SAFETY-GUIDE.md](SAFETY-GUIDE.md).
+
 ## Windows development
 
 ```powershell
